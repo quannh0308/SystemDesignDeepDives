@@ -23,6 +23,90 @@ matches `tasks.md`; every mechanism traces to a `design.md` section.
 
 Runtime: Node.js 22, TypeScript, one esbuild-bundled Lambda per entry.
 
+The abstract boxes of design.md §4 materialize as the exact resources below —
+split at the SQS handoff into the request/ingest paths and the matching path.
+Rectangles = Lambda (compute), cylinders = data stores, double brackets =
+queues; operations ride on the edges.
+
+**Diagram 1a — request and location ingest paths**
+
+```mermaid
+flowchart LR
+    RSIM[rider-sim CLI<br/>src/sim/rider-sim.ts]
+    DSIM[driver-sim CLI<br/>src/sim/driver-sim.ts]
+
+    subgraph apistack [api-stack]
+        APIGW[HTTP API Gateway]
+        AUTH[Lambda authorizer<br/>HMAC verify]
+        FARES_L[Lambda fares-handler<br/>src/fares/handler.ts]
+        RIDES_L[Lambda rides-handler<br/>src/rides/handler.ts]
+        OFFERPOLL_L[Lambda offer-poll<br/>GET /drivers/offer]
+    end
+
+    subgraph locstack [location-stack — VPC]
+        LOC_L[Lambda location-handler<br/>src/location/handler.ts]
+        SWEEP_L[Lambda sweeper<br/>src/location/sweeper.ts]
+        REDIS[(ElastiCache Redis<br/>geo:drivers · ts · locks)]
+    end
+    EVB[EventBridge rule<br/>rate 1 minute]
+
+    subgraph datastack [data-stack]
+        FARES_T[(DynamoDB fares<br/>TTL expiresAt)]
+        RIDES_T[(DynamoDB rides<br/>+ 2 GSIs)]
+        OFFERS_T[(DynamoDB driver-offers<br/>TTL + stream)]
+    end
+    MQ[[SQS match-queue<br/>continues in 1b]]
+
+    RSIM -->|POST /fares /rides<br/>GET /rides| APIGW
+    DSIM -->|POST /drivers/location<br/>GET offer · PATCH ride| APIGW
+    APIGW -->|every request| AUTH
+    APIGW --> FARES_L
+    APIGW --> RIDES_L
+    APIGW --> OFFERPOLL_L
+    APIGW --> LOC_L
+    FARES_L -->|PutItem fare| FARES_T
+    RIDES_L -->|useFare guard| FARES_T
+    RIDES_L -->|PutItem ride<br/>acceptRide guard| RIDES_T
+    RIDES_L -->|SendMessage rideId| MQ
+    OFFERPOLL_L -->|GetItem| OFFERS_T
+    LOC_L -->|GEOADD + ZADD| REDIS
+    EVB -->|1/min| SWEEP_L
+    SWEEP_L -->|evict stale >30 s| REDIS
+```
+
+**Diagram 1b — matching path (from the queue onward)**
+
+```mermaid
+flowchart LR
+    MQ[[SQS match-queue]]
+    DLQ[[SQS DLQ]]
+    PUMP_L[Lambda sqs-pump<br/>StartExecution name=rideId]
+    SFN[Step Functions<br/>match-state-machine]
+    CAND_L[Lambda candidates<br/>src/matching/candidates.ts]
+    OFFER_L[Lambda offer-step<br/>src/matching/offer.ts]
+    FAIL_L[Lambda fail-step<br/>src/matching/fail.ts]
+    AUDIT_L[Lambda offer-audit<br/>stream consumer]
+    RIDES_L[Lambda rides-handler<br/>PATCH accept/decline]
+    REDIS[(ElastiCache Redis<br/>GEO + lock keys)]
+    RIDES_T[(DynamoDB rides)]
+    OFFERS_T[(DynamoDB driver-offers)]
+
+    MQ --> PUMP_L -->|StartExecution| SFN
+    MQ -.->|3 receive failures| DLQ
+    SFN -->|state| CAND_L
+    SFN -->|state · waitForTaskToken<br/>timeout 10 s| OFFER_L
+    SFN -->|state| FAIL_L
+    CAND_L -->|GEOSEARCH 5 km ASC 10| REDIS
+    CAND_L -->|Query driverId-status GSI| RIDES_T
+    OFFER_L -->|SET NX PX 10000| REDIS
+    OFFER_L -->|markOffered guard| RIDES_T
+    OFFER_L -->|PutItem offer + taskToken| OFFERS_T
+    FAIL_L -->|status = FAILED| RIDES_T
+    RIDES_L -->|acceptRide guard| RIDES_T
+    RIDES_L -->|SendTaskSuccess /<br/>SendTaskFailure| SFN
+    OFFERS_T -.->|DynamoDB stream| AUDIT_L
+```
+
 | Component | File | Trigger | Writes to | Reads from |
 |---|---|---|---|---|
 | Fare handler | `src/fares/handler.ts` | `POST /fares` | `fares` | routing port |
@@ -130,6 +214,20 @@ correctness stays guarded by the conditional writes.
 Execution name = `rideId`, so duplicate SQS deliveries cannot start a second
 workflow (`ExecutionAlreadyExists` swallowed by the SQS→SFN pump Lambda).
 Input: `{rideId, pickup, excluded: []}`.
+
+```mermaid
+flowchart LR
+    START([StartExecution<br/>name = rideId]) --> MM[MarkMatching<br/>REQUESTED to MATCHING]
+    MM --> GC[GetCandidates<br/>minus excluded + active]
+    GC --> ANY{any<br/>candidates?}
+    ANY -->|no| MF[MarkFailed]
+    ANY -->|yes| OFF[OfferToDriver<br/>waitForTaskToken · 10 s]
+    OFF -->|SendTaskSuccess<br/>driver accepted| DONE([Done — ACCEPTED])
+    OFF -->|timeout · decline<br/>· LOCK_BUSY| REL[ReleaseOffer<br/>+ exclude driver]
+    REL --> GC
+    GC -.->|workflow timeout 60 s<br/>catch-all| MF
+    MF --> FAILED([End — FAILED])
+```
 
 1. `MarkMatching` — `REQUESTED→MATCHING` (idempotent condition).
 2. `GetCandidates` — GEOSEARCH minus `excluded` minus drivers with an active ride.

@@ -20,10 +20,14 @@ other.
 3. Every design directory contains exactly this contract:
    - `design.md` — the design document at interview altitude (structure below)
    - `lld.md` — the low-level design of the lab build: production→lab
-     substitution map, component inventory with exact file paths, API contracts,
-     attribute-level schemas, orchestration states, stack wiring, config matrix,
-     and a tasks↔LLD↔design traceability table. Written after design.md is
-     agreed, before implementation starts — tasks.md executes against it
+     substitution map, **concrete deployment diagrams** (Mermaid; every node is
+     a deployable resource — the actual Lambda/table/queue with its file path,
+     never an abstract service box; compute and storage in separate boxes,
+     operations on edges), component inventory with exact file paths, API
+     contracts, attribute-level schemas, orchestration state graph, stack
+     wiring, config matrix, and a tasks↔LLD↔design traceability table. Written
+     after design.md is agreed, before implementation starts — tasks.md
+     executes against it
    - `tasks.md` — implementation plan, updated as work progresses (never stale)
    - `ledger.md` — work DAG + append-only ledger
    - `cdk/` — CDK app (TypeScript) deploying the infra
