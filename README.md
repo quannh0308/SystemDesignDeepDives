@@ -17,6 +17,7 @@ SystemDesignDeepDives/
 ├── AGENTS.md            ← operating manual: file contracts, templates, conventions
 └── <system-name>/       ← one directory per system design (kebab-case)
     ├── design.md        ← the design doc, ending in interview-style deep dives
+    ├── lld.md           ← low-level design of the lab build (the buildable truth)
     ├── tasks.md         ← implementation plan, kept current with progress
     ├── ledger.md        ← work DAG + append-only ledger of done/to-do
     ├── cdk/             ← CDK app deploying the infra

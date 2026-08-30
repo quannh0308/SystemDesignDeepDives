@@ -18,7 +18,12 @@ other.
 2. One directory per system design, kebab-case (`uber-like-rides/`,
    `scalable-notifications/`).
 3. Every design directory contains exactly this contract:
-   - `design.md` — the design document (structure below)
+   - `design.md` — the design document at interview altitude (structure below)
+   - `lld.md` — the low-level design of the lab build: production→lab
+     substitution map, component inventory with exact file paths, API contracts,
+     attribute-level schemas, orchestration states, stack wiring, config matrix,
+     and a tasks↔LLD↔design traceability table. Written after design.md is
+     agreed, before implementation starts — tasks.md executes against it
    - `tasks.md` — implementation plan, updated as work progresses (never stale)
    - `ledger.md` — work DAG + append-only ledger
    - `cdk/` — CDK app (TypeScript) deploying the infra
@@ -163,10 +168,13 @@ Two parts, both mandatory:
 
 1. **Discuss** — owner feeds the prompt (e.g. "Uber-like system"); agent asks the
    interview-style clarifying questions before writing anything.
-2. **Design** — write `design.md` §1-§8, review together, then draft the Deep Dives
-   as decisions get locked.
-3. **Plan** — derive `tasks.md` from the design; seed `ledger.md` with the DAG.
-4. **Build** — execute tasks on a feature branch; keep tasks.md checkboxes and
-   ledger.md current in the same commits; wire each deep dive's `In the code:` line
-   as its implementation lands.
-5. **Prove** — deploy, exercise, capture evidence in the ledger, destroy.
+2. **Design** — write `design.md` §1-§8 at interview altitude, review together,
+   then draft the Deep Dives as decisions get locked.
+3. **Specify** — write `lld.md`: pin the lab substitutions, contracts, schemas,
+   and wiring the build will follow. design.md stays interview-clean; the LLD
+   carries the buildable truth.
+4. **Plan** — derive `tasks.md` from the LLD; seed `ledger.md` with the DAG.
+5. **Build** — execute tasks on a feature branch; keep tasks.md checkboxes and
+   ledger.md current in the same commits; wire each deep dive's `In the code:`
+   line as its implementation lands.
+6. **Prove** — deploy, exercise, capture evidence in the ledger, destroy.

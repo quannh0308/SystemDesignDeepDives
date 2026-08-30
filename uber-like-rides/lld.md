@@ -1,0 +1,197 @@
+# Low-Level Design — Uber-like Ride Hailing (lab build)
+
+This document specifies the system we actually deploy. `design.md` answers the
+interview question at production scale; this LLD defines the **scale model** of
+that design: identical architecture shapes (geo index, TTL locks, queue, durable
+orchestration, conditional-write guards), lab-scale parts. Every file path here
+matches `tasks.md`; every mechanism traces to a `design.md` section.
+
+## 0. Production → lab substitution map
+
+| design.md (production shape) | Lab build | What it preserves | What it knowingly loses |
+|---|---|---|---|
+| Sharded Redis GEO cluster | 1× ElastiCache `cache.t4g.micro` | GEO command semantics, lock atomicity, per-shard contention behavior | absolute scale, cluster failover |
+| Service fleets | One Lambda per handler behind an HTTP API | stateless units, per-path scaling | warm connection pools, long-lived state |
+| APNs/FCM push to drivers | `driver-offers` table + simulator polling (1 s) | offer contract, 10 s timeout semantics | real push latency |
+| Rider push/WebSocket updates | `GET /rides/{rideId}` polling | ride state machine visibility | push latency |
+| Kafka (regional partitions, replay) | SQS standard + DLQ | buffering, at-least-once, poison isolation | ordering, replay |
+| Mobile clients | `src/sim/*` simulators driven by `fixtures/` | behavior profiles, adaptive ping cadence | device/network realities |
+| Third-party maps API | Haversine × city-speed model (`src/fares/routing.ts`) | pricing function shape, ETA plumbing | real road routing |
+| Production authn (OAuth/JWT infra) | HMAC-signed identity token via Lambda authorizer (§2.1) | "identity from token, never body" rule | real identity provider |
+
+## 1. Component inventory
+
+Runtime: Node.js 22, TypeScript, one esbuild-bundled Lambda per entry.
+
+| Component | File | Trigger | Writes to | Reads from |
+|---|---|---|---|---|
+| Fare handler | `src/fares/handler.ts` | `POST /fares` | `fares` | routing port |
+| Routing port | `src/fares/routing.ts` | (lib) | — | — |
+| Ride handler | `src/rides/handler.ts` | `POST /rides`, `GET /rides/{id}`, `PATCH /rides/{id}` | `rides`, match queue, SFN task token | `fares`, `rides` |
+| Ride store | `src/rides/store.ts` | (lib) | `rides` conditional writes | `rides` |
+| Location handler | `src/location/handler.ts` | `POST /drivers/location` | Redis GEO + ts ZSET | — |
+| Stale sweeper | `src/location/sweeper.ts` | EventBridge 1/min | Redis (evictions) | Redis ts ZSET |
+| Candidate finder | `src/matching/candidates.ts` | SFN state | — | Redis GEOSEARCH, `rides` GSI |
+| Offer step | `src/matching/offer.ts` | SFN state (waitForTaskToken) | Redis lock, `rides`, `driver-offers` | — |
+| Driver lock lib | `src/matching/driver-lock.ts` | (lib) | Redis `SET NX` / Lua release | — |
+| Fail step | `src/matching/fail.ts` | SFN state | `rides` → `FAILED` | — |
+| Invariant auditor | `src/e2e/invariants.ts` | e2e/load harness | — | `rides`, offer audit |
+| Test data gens | `src/testdata/{city,fleet,demand}.ts` | CLI `npm run gen` | `fixtures/` | — |
+| Simulators | `src/sim/{driver-sim,rider-sim}.ts` | CLI | HTTP API | `fixtures/`, `deploy/outputs.json` |
+| Load runner | `src/load/runner.ts` | CLI | HTTP API | `fixtures/` |
+
+VPC placement: only Redis-touching Lambdas (location handler, sweeper,
+candidates, offer) run in the VPC. DynamoDB access from inside uses the free
+gateway endpoint; Step Functions callbacks use an interface endpoint (§6).
+
+## 2. API contract
+
+Base URL from `deploy/outputs.json` → `apiUrl`. All bodies JSON.
+
+### 2.1 Auth (lab)
+
+Every request carries `Authorization: Bearer <token>` where
+`token = base64(payload) + "." + hex(hmacSHA256(payload, SIM_SECRET))` and
+`payload = {"role":"rider"|"driver","id":"<uuid>"}`. A Lambda authorizer
+verifies the HMAC and injects `role`/`id` into the request context — handlers
+never read identity from the body (design §3 security note). `SIM_SECRET` is
+generated at deploy time and exported to `deploy/outputs.json`. **This is
+deliberately not production auth**; it exists so the "identity from token" rule
+is real in code rather than waived in the lab.
+
+### 2.2 Endpoints
+
+| Endpoint | Request | 2xx response | Errors |
+|---|---|---|---|
+| `POST /fares` (rider) | `{pickup:{lat,lng}, destination:{lat,lng}}` | `201 {fareId, priceCents, currency:"EUR", etaSeconds, expiresAt}` | `400` bad coords |
+| `POST /rides` (rider) | `{fareId}` | `202 {rideId, status:"REQUESTED"}` | `404` unknown fare · `409 FARE_EXPIRED` · `409 FARE_ALREADY_USED` |
+| `GET /rides/{rideId}` (rider/driver) | — | `200 {rideId, status, driverId?, pickup?, attempt}` | `404` |
+| `POST /drivers/location` (driver) | `{lat, lng}` | `200 {}` | `400` outside city bbox |
+| `GET /drivers/offer` (driver, lab notifier) | — | `200 {rideId, pickup, priceCents, expiresAt}` or `204` | — |
+| `PATCH /rides/{rideId}` (driver) | `{action:"accept"\|"decline"}` | `200 {status}` | `409 STALE_OFFER` (reassigned or timed out) · `404` |
+
+Error body shape everywhere: `{error: {code, message}}`.
+
+## 3. DynamoDB schemas
+
+On-demand mode. All tables `RemovalPolicy.DESTROY`.
+
+**`fares`** — PK `fareId` (S). Attributes: `pickupLat/Lng` (N), `destLat/Lng`
+(N), `priceCents` (N), `etaSeconds` (N), `riderId` (S), `usedByRideId` (S, set
+on ride creation — enforces one ride per fare), `createdAt` (N), `expiresAt`
+(N, **TTL**).
+
+**`rides`** — PK `rideId` (S). Attributes: `riderId`, `fareId`, `status` (S:
+`REQUESTED|MATCHING|OFFERED|ACCEPTED|IN_PROGRESS|COMPLETED|CANCELLED|FAILED`),
+`driverId` (S, present ≥ OFFERED), `attempt` (N), `runId` (S, test-run tag for
+invariant audits), `createdAt/offeredAt/acceptedAt/terminalAt` (N).
+GSIs: `driverId-status` (active-ride filter), `riderId-createdAt` (history).
+
+Guard expressions (verbatim, implemented in `src/rides/store.ts`):
+
+```
+markOffered:  SET status=OFFERED, driverId=:d, attempt=:a, offeredAt=:now
+              ConditionExpression: #status = MATCHING
+acceptRide:   SET status=ACCEPTED, acceptedAt=:now
+              ConditionExpression: #status = OFFERED AND driverId = :caller
+releaseOffer: SET status=MATCHING REMOVE driverId
+              ConditionExpression: #status = OFFERED AND driverId = :d AND attempt = :a
+useFare:      SET usedByRideId=:r
+              ConditionExpression: attribute_not_exists(usedByRideId) AND expiresAt > :now
+```
+
+A failed condition never retries blindly: `STALE_OFFER` / `FARE_ALREADY_USED`
+map straight to 409s (design Deep Dive 9.2: the conditional write is the final
+arbiter).
+
+**`driver-offers`** — PK `driverId` (S). Attributes: `rideId`, `taskToken` (S,
+Step Functions callback token), `priceCents`, `pickupLat/Lng`, `offeredAt`,
+`expiresAt` (N, **TTL** = offeredAt + 10 s). Written by the offer step; read by
+`GET /drivers/offer`; deleted on accept/decline. Its DynamoDB Stream feeds an
+`offer-audit` append log (handler in matching-stack) — the invariant auditor's
+source for "no overlapping offers per driver".
+
+## 4. Redis schema and command usage
+
+Single logical DB, keys namespaced:
+
+| Key | Type | Written by | Commands |
+|---|---|---|---|
+| `geo:drivers` | GEO (ZSET) | location handler | `GEOADD` (overwrite per ping) · `GEOSEARCH FROMLONLAT … BYRADIUS 5 km ASC COUNT 10` (candidates) · `ZREM` (sweeper) |
+| `geo:drivers:ts` | ZSET | location handler | `ZADD` per ping · `ZRANGEBYSCORE -inf (now-30s)` + `ZREM` (sweeper) |
+| `lock:driver:{driverId}` | STRING | driver-lock lib | acquire `SET key rideId NX PX 10000` · release = Lua compare-and-DEL (only if value == rideId — never release another ride's lock) |
+
+Client: `ioredis`, 2 s command timeout, zero retries on lock acquire — a
+timeout counts as "driver busy, next candidate". Fail toward liveness;
+correctness stays guarded by the conditional writes.
+
+## 5. Match orchestration (Step Functions, standard workflow)
+
+Execution name = `rideId`, so duplicate SQS deliveries cannot start a second
+workflow (`ExecutionAlreadyExists` swallowed by the SQS→SFN pump Lambda).
+Input: `{rideId, pickup, excluded: []}`.
+
+1. `MarkMatching` — `REQUESTED→MATCHING` (idempotent condition).
+2. `GetCandidates` — GEOSEARCH minus `excluded` minus drivers with an active ride.
+3. `AnyCandidates?` — Choice; empty → `MarkFailed`.
+4. `OfferToDriver` — `offer.ts`, `waitForTaskToken`, `TimeoutSeconds: 10`: acquire lock (busy → exclude driver, loop), `markOffered`, write `driver-offers` row carrying the task token.
+5. Task success (accept handler ran `acceptRide` then `SendTaskSuccess`) → `Done`.
+6. `States.Timeout` or task failure (decline → `SendTaskFailure`) → `ReleaseOffer` (guarded release + lock release + offer row delete) → append driver to `excluded` → `GetCandidates`.
+7. `MarkFailed` — terminal `FAILED`.
+
+Workflow-level `TimeoutSeconds: 60` (design NFR-1) with catch → `MarkFailed`.
+Handlers resolve the token only *after* their conditional write succeeds — the
+ride record, not the workflow, is the source of truth.
+
+## 6. CDK stacks and wiring
+
+| Stack | Contains | Exports |
+|---|---|---|
+| `data-stack` | 3 tables + `driver-offers` stream | table names/ARNs |
+| `location-stack` | VPC (2 AZ, private-isolated), ElastiCache single node, SGs, DynamoDB **gateway** endpoint (free), Step Functions + SQS **interface** endpoints (≈$8/mo each while deployed — teardown-sensitive) | Redis endpoint, VPC/SG ids |
+| `api-stack` | HTTP API, HMAC authorizer, fare/ride/location/offer handlers, `SIM_SECRET` | `apiUrl` |
+| `matching-stack` | queue + DLQ (maxReceiveCount 3), SQS→SFN pump, state machine, matcher Lambdas, offer-audit stream handler, dashboard + 2 paging alarms (match p99, oldest-message age) | state machine ARN |
+
+`cdk deploy --all --outputs-file deploy/outputs.json` — that file is the single
+config source for smoke, e2e, simulators, and load (tasks 7–9).
+
+## 7. Configuration matrix
+
+| Env var | Used by | Value |
+|---|---|---|
+| `RIDES_TABLE` / `FARES_TABLE` / `OFFERS_TABLE` | handlers | from data-stack |
+| `REDIS_ENDPOINT` | VPC Lambdas | from location-stack |
+| `MATCH_QUEUE_URL` | ride handler | from matching-stack |
+| `STATE_MACHINE_ARN` | SQS pump | from matching-stack |
+| `LOCK_TTL_MS` | offer step | `10000` (= offer window, DD 9.2) |
+| `SEARCH_RADIUS_KM` / `CANDIDATE_LIMIT` | candidates | `5` / `10` |
+| `MATCH_BUDGET_S` | state machine | `60` (NFR-1) |
+| `STALE_DRIVER_S` | sweeper | `30` |
+| `FARE_TTL_S` | fare handler | `300` |
+| `CITY_BBOX` | fare/location validation, testdata | Berlin `52.35,13.20,52.60,13.55` |
+
+One knob, one owner: every number appears in exactly one construct and reaches
+code via env — no constant duplicated in source.
+
+## 8. Test architecture (tasks 6–10)
+
+- **Fixtures** (`fixtures/*.json`): `{seed, city, drivers[{id, start, profile:{acceptP, thinkMs, cadence}}], demand[{atMs, pickup, dest}]}` — generated, versioned, replayable.
+- **Smoke** (`npm run smoke`): the 4 checks of tasks 7.2 against §2 endpoints, <60 s total, non-zero exit gates the LIVE gate.
+- **E2E** (`npm run e2e`): vitest; each spec = fixture world + scenario + **invariant audit**. The auditor pulls all `rides` rows for the spec's `runId` plus the offer-audit trail and asserts: per driver, offer intervals never overlap; per ride, at most one driverId ever ACCEPTED; every ride terminal.
+- **Load** (`npm run load -- --scenario firehose|burst|soak`): worker pool, per-request latency records → p50/p95/p99 summary; the burst scenario ends with the same invariant audit over the whole run.
+- **Drills** (task 10): fault injection via `CHAOS=kill-after-lock` env flag on the offer step + scripted ElastiCache reboot; evidence = timestamped CloudWatch snapshots into `ledger.md`.
+
+## 9. Traceability
+
+| tasks.md | This LLD | design.md |
+|---|---|---|
+| 1 scaffold | §6 | §4 |
+| 2 data stores | §3 | §5, DD 9.5 |
+| 3 location path | §1, §4 | §6.3, DD 9.1/9.6 |
+| 4 matching path | §4, §5 | §6.2/§6.4, DD 9.2/9.3/9.4 |
+| 5 fares | §1, §2 | §6.1 |
+| 6 test data | §8 fixtures | §2.2 |
+| 7 go live | §6, §8 smoke | §4, §8 |
+| 8 e2e | §8, §3 audit | NFR-2, DD 9.2 |
+| 9 load | §8 load | NFR-1/3 |
+| 10 drills | §8 drills | §8, DD 9.1 |

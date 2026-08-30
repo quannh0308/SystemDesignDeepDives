@@ -1,5 +1,9 @@
 # Uber-like Ride Hailing
 
+_This document is the design at production scale (interview altitude). The
+buildable specification of the lab system — contracts, schemas, wiring — lives
+in [lld.md](./lld.md)._
+
 ## 1. Overview
 
 A ride-hailing marketplace: riders get a fare estimate, request a ride, and are
