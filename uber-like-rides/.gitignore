@@ -3,4 +3,6 @@ cdk.out/
 coverage/
 # deploy/outputs.json carries the deploy-time SIM_SECRET (lld.md section 2.1) — never commit
 deploy/
+# context cache holds account-numbered lookup results once deploys start — public repo, keep out
+cdk.context.json
 *.tsbuildinfo
