@@ -1,14 +1,16 @@
 # Implementation Plan — Uber-like Ride Hailing
 
-Execution order follows the dependency chain: data → location path → matching
-path → notification → simulation → evidence. Checkbox state is the source of
-truth; update in the same commit as the work. `[ ]` not started · `[-]` in
-progress · `[x]` done.
+Execution order follows the dependency chain: build (1–5) → test assets (6) → go
+live (7) → e2e (8) → load (9) → drills (10) → receipts + teardown (11). The
+system is *testable by construction*: every NFR in design §2.2 maps to a numbered
+test task below (NFR-1 → 9.2, NFR-2 → 8.3 + 9.2, NFR-3 → 9.2/9.3, NFR-4 → 10.2).
+Checkbox state is the source of truth; update in the same commit as the work.
+`[ ]` not started · `[-]` in progress · `[x]` done.
 
 - [ ] 1. Scaffold CDK app and deployment skeleton
   - [ ] 1.1 `cdk init` TypeScript app under `cdk/`, pinned deps, `npm test` wired
   - [ ] 1.2 Stack layout: `data-stack` (stateful), `location-stack` (Redis + VPC), `api-stack` (gateway + ride/location handlers), `matching-stack` (queue + state machine + matcher lambdas)
-  - [ ] 1.3 Tags (`project`, `design`), region default eu-central-1, `cdk synth` green in CI-less local
+  - [ ] 1.3 Tags (`project`, `design`), region default eu-central-1, `cdk synth` green
   - _Design: §4_
 
 - [ ] 2. Data stores — system of record
@@ -37,19 +39,42 @@ progress · `[x]` done.
   - [ ] 5.2 `POST /fares`: price = f(distance, duration), 5-min expiry; `GET /rides/{id}` for state polling
   - _Design: §6.1_
 
-- [ ] 6. Simulation clients — prove the loop end to end
-  - [ ] 6.1 `src/sim/driver-sim.ts`: N drivers moving on a city grid, adaptive ping cadence (stationary 30 s / cruise 10 s / hot 2–5 s), poll offers, accept/decline with configurable probability + think time
-  - [ ] 6.2 `src/sim/rider-sim.ts`: fare → request → poll to terminal state; burst mode (M requests, one neighborhood)
-  - _Design: §2.2, Deep Dive 9.6_
+- [ ] 6. Test data generation — reproducible worlds to test against
+  - [ ] 6.1 `src/testdata/city.ts`: synthetic city model on a real bounding box (Berlin), road-grid snap, seeded RNG — same seed ⇒ same world, so every test run is comparable
+  - [ ] 6.2 `src/testdata/fleet.ts`: driver fleet generator with placement distributions (uniform | downtown-weighted | airport-cluster) and behavior profiles (accept probability, think time, shift length)
+  - [ ] 6.3 `src/testdata/demand.ts`: rider demand generator — steady Poisson arrivals, rush-hour ramp, and hotspot burst (N requests, one neighborhood, M minutes) matching the design's 100k-same-metro scenario shape
+  - [ ] 6.4 Fixture CLI: `npm run gen -- --seed 42 --drivers 200 --profile rush` writes versioned JSON fixtures under `fixtures/`; unit-test the generators' invariants (bounds, distributions, determinism)
+  - _Design: §2.2 scale assumptions, Deep Dive 9.6_
 
-- [ ] 7. Evidence run — verify the NFRs, capture in ledger
-  - [ ] 7.1 Happy path: 50 drivers / 20 rides → all `ACCEPTED`, match p99 < 60 s
-  - [ ] 7.2 Consistency: burst 100 concurrent requests, 10 drivers → zero double-dispatch (assert: no driver holds 2 offers/rides at any point; ride never has 2 drivers)
-  - [ ] 7.3 Failure drill: kill matcher mid-offer → lock self-expires ≤10 s, ride still reaches terminal state
-  - [ ] 7.4 Record all evidence (metrics, execution histories, assertions) in `ledger.md`
-  - _Design: §2.2 NFR-1/2/3, §8_
+- [ ] 7. Go live — deploy and prove the system breathes
+  - [ ] 7.1 `cdk bootstrap` (once) + `cdk deploy --all` to the lab account; stack outputs (API URL, table/queue names) written to `deploy/outputs.json` — the single config source for every test task below
+  - [ ] 7.2 Smoke suite `npm run smoke`: one driver ping lands in GEO index, one fare priced, one ride matched end-to-end to ACCEPTED, sweeper evicts a silent driver — each check <60 s, exits non-zero on any failure
+  - [ ] 7.3 Observability live: CloudWatch dashboard (match latency, queue depth/age, lock contention, stale-driver ratio) + the two paging alarms from design §8
+  - [ ] 7.4 Record deploy evidence (stack ARNs, smoke output) in ledger — LIVE gate passed, testing phases unlocked
+  - _Design: §4, §8_
 
-- [ ] 8. Wire deep-dive receipts + teardown
-  - [ ] 8.1 Flip every §9 "In the code (planned)" to concrete file links as they land
-  - [ ] 8.2 `cdk destroy` leaves the account clean (verify: no orphaned VPC/ENI/tables); README index status → Built
+- [ ] 8. E2E test suite — automated, repeatable, against the live system
+  - [ ] 8.1 Harness: vitest e2e project reading `deploy/outputs.json`; each spec seeds its own fixture world (task 6), tags resources with a run id, cleans up after itself
+  - [ ] 8.2 Scenario specs: happy path · decline→next driver · 10 s timeout→next driver · all-decline→FAILED · no drivers in radius→FAILED within 1-min budget · rider cancel during MATCHING · stale accept after reassignment→409 · expired fare rejected
+  - [ ] 8.3 Consistency invariant auditor `src/e2e/invariants.ts`: after any scenario, assert from the record — no driver ever held 2 overlapping offers/rides (offer log + lock audit), no ride ever had 2 drivers, every ride reached a terminal state. Runs as the last step of every e2e spec, not a separate opt-in
+  - [ ] 8.4 `npm run e2e` green end-to-end in one command; flake policy: zero retries tolerated for invariant assertions
+  - _Design: §2.2 NFR-2, §6.2, §6.4, Deep Dive 9.2_
+
+- [ ] 9. Load tests — find the numbers, not just survive
+  - [ ] 9.1 Load driver `src/load/runner.ts`: worker-pool client (configurable TPS ramp, duration, fixture), emits per-request latency records; results summarized to p50/p95/p99 + error rate
+  - [ ] 9.2 Location firehose test: ramp 200→1,000 sustained pings/s (lab-scale stand-in for the design's 20k/s city figure) for 10 min — measure GEOADD p99, Redis CPU/memory, GEOSEARCH p99 under concurrent write load, sweeper correctness at load
+  - [ ] 9.3 Matching burst test: hotspot fixture, 200 concurrent ride requests against 20 drivers — measure match p50/p99 vs the <60 s budget (NFR-1), queue depth/age curve, zero dropped requests (NFR-3), then run the 8.3 invariant auditor over the full run (NFR-2 under contention, not just in unit tests)
+  - [ ] 9.4 Soak: 30 min steady mixed load (pings + Poisson ride arrivals) — no latency drift, no queue growth, no Redis memory creep, DLQ empty
+  - [ ] 9.5 Capture: metric snapshots + latency histograms + found limits (where does the single Redis node saturate?) → ledger evidence; feed real numbers back into design §2.2 if assumptions were off
+  - _Design: §2.2 NFR-1/2/3, §8 metrics_
+
+- [ ] 10. Failure drills — prove §8 claims, don't just state them
+  - [ ] 10.1 Kill matcher mid-offer (inject fault between lock and offer write): driver lock self-expires ≤10 s, ride still reaches a terminal state, invariants hold
+  - [ ] 10.2 Redis restart under load: matching fails closed (no drops — requests wait in queue), geo index self-rebuilds within one ping interval after recovery, match latency recovers — timestamped evidence for the design's headline durability trade (Deep Dive 9.1)
+  - [ ] 10.3 Poison message → DLQ path: malformed ride request lands in DLQ with alarm, healthy traffic unaffected
+  - _Design: §8, Deep Dives 9.1, 9.2_
+
+- [ ] 11. Receipts + teardown
+  - [ ] 11.1 Flip every design §9 "In the code (planned)" to concrete file links as they land
+  - [ ] 11.2 `cdk destroy` leaves the account clean (verify: no orphaned VPC/ENI/tables/log groups); README index status → Built + load-tested
   - _Design: §9, AGENTS.md ground rules_
