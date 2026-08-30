@@ -40,8 +40,8 @@ flowchart LR
     classDef done fill:#2e7d32,color:#fff,stroke:#1b5e20
     classDef active fill:#ff8f00,color:#fff,stroke:#e65100
     classDef pending fill:#1565c0,color:#fff,stroke:#0d47a1
-    class DESIGN,LLD,PLAN,T1,T2,T3 done
-    class T4,T5,T6,T7,T8,T9,T10,T11,AWS pending
+    class DESIGN,LLD,PLAN,T1,T2,T3,T5 done
+    class T4,T6,T7,T8,T9,T10,T11,AWS pending
 ```
 
 ## Ledger
@@ -62,6 +62,7 @@ Append-only. Corrections get a new row, never a rewrite.
 | 2026-08-30 | T2 data stores: data-stack materialized — `fares` (TTL), `rides` (+ `driverId-status` KEYS_ONLY GSI, `riderId-createdAt` ALL GSI), `driver-offers` (TTL + NEW_AND_OLD_IMAGES stream), all on-demand + DESTROY, names/stream ARN exported; 7 template-assertion tests pin the schema. `src/rides/store.ts`: the four §3 guards verbatim as pure command builders + `markMatching`/`createRide`, executed by `RideStore` with typed 409 mapping (STALE_OFFER; useFare disambiguates FARE_ALREADY_USED / FARE_EXPIRED / not-found from the returned old image); 17 guard tests, no AWS. Gate green: 29 tests total | this commit | `npm run check` exit 0 |
 | 2026-08-30 | Directory restructure (owner decision): docs moved to `docs/` with design.md → hld.md (hld/lld pair); per-design README.md landing page added; root .gitignore (IDE metadata); repo contract updated (AGENTS.md file contract + workflow, root README layout/index) so future designs inherit the shape. Live references repointed in lld.md, code comments, package.json; historical ledger rows left as written per append-only rule | this commit | `npm run check` exit 0 |
 | 2026-08-30 | T3 location path: GeoClient seam + in-memory fake with real ZSET/geo semantics; location handler (bbox validation, identity from token never body); sweeper (strict >30 s bound, boundary member survives); candidate finder (GEOSEARCH ASC → minus excluded → minus active via rides GSI lookup); ioredis adapter (2 s timeout, exercised from T7). api-stack materialized: HTTP API + deploy-time SIM_SECRET + HMAC authorizer default on every route; location-stack: isolated VPC (0 NAT), 1× cache.t4g.micro, DDB gateway endpoint, 1-min sweep rule. check-deps generalized: runtime = src/* minus harness (auto-covers new `auth`/`http` dirs). Synth made account-agnostic — ambient expired AWS creds were failing synth; local-first now holds at synth too. Gate: 56 tests | this commit | `npm run check` exit 0 |
+| 2026-08-30 | T5 fare service: RoutingPort + city-speed lab routing (24 km/h over haversine); pricing 300 + 120/km + 25/min EUR cents, monotonicity pinned; `POST /fares` handler (bbox 400, rider-only 403, §2.2 contract shape, expiresAt in epoch seconds = the TTL/guard unit, createdAt in ms — units split documented on the Fare type); `GET /rides/{rideId}` polling endpoint (404 taxonomy); `createFare` on the store; api-stack routes both behind the authorizer with table grants. Gate: 75 tests, 13 files | this commit | `npm run check` exit 0 |
 
 ## Open items (not DAG nodes)
 

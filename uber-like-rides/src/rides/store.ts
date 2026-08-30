@@ -63,7 +63,9 @@ export interface Fare {
   priceCents: number;
   etaSeconds: number;
   usedByRideId?: string;
+  /** Epoch milliseconds. */
   createdAt: number;
+  /** Epoch SECONDS — DynamoDB TTL requires it; also the useFare guard comparand. */
   expiresAt: number;
 }
 
@@ -299,6 +301,11 @@ export class RideStore {
   async getFare(fareId: string): Promise<Fare | undefined> {
     const out = await this.client.send(new GetCommand({ TableName: this.tables.fares, Key: { fareId } }));
     return out.Item as Fare | undefined;
+  }
+
+  /** Plain put — fareId is a fresh UUID, no condition needed. */
+  async createFare(fare: Fare): Promise<void> {
+    await this.client.send(new PutCommand({ TableName: this.tables.fares, Item: fare }));
   }
 
   async markMatching(rideId: string): Promise<void> {

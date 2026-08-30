@@ -43,10 +43,10 @@ Checkbox state is the source of truth; update in the same commit as the work.
   - [ ] 4.5 Unit tests: lock contention (both-matchers-race), stale accept 409, idempotent re-offer
   - _Design: §6.2, §6.4, Deep Dives 9.2, 9.3, 9.4_
 
-- [ ] 5. Fare service
-  - [ ] 5.1 Routing provider port (`src/fares/routing.ts`) with haversine + city-speed lab implementation
-  - [ ] 5.2 `POST /fares`: price = f(distance, duration), 5-min expiry; `GET /rides/{id}` for state polling
-  - [ ] 5.3 Unit tests: haversine against known city-pair distances, pricing monotonicity (longer ride never cheaper), fare expiry boundary
+- [x] 5. Fare service
+  - [x] 5.1 Routing provider port (`src/fares/routing.ts`) with haversine + city-speed lab implementation
+  - [x] 5.2 `POST /fares`: price = f(distance, duration), 5-min expiry; `GET /rides/{id}` for state polling
+  - [x] 5.3 Unit tests: haversine against known city-pair distances, pricing monotonicity (longer ride never cheaper), fare expiry boundary
   - _Design: §6.1_
 
 - [ ] 6. Test data generation — reproducible worlds to test against

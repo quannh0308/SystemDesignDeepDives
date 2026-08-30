@@ -14,12 +14,14 @@ const env = {
   region: process.env.CDK_DEFAULT_REGION ?? 'eu-central-1',
 };
 
-new DataStack(app, 'DataStack', { env, stackName: 'uber-rides-data-stack' });
+const data = new DataStack(app, 'DataStack', { env, stackName: 'uber-rides-data-stack' });
 const location = new LocationStack(app, 'LocationStack', { env, stackName: 'uber-rides-location-stack' });
 new ApiStack(app, 'ApiStack', {
   env,
   stackName: 'uber-rides-api-stack',
   locationHandler: location.locationHandler,
+  faresTable: data.fares,
+  ridesTable: data.rides,
 });
 new MatchingStack(app, 'MatchingStack', { env, stackName: 'uber-rides-matching-stack' });
 

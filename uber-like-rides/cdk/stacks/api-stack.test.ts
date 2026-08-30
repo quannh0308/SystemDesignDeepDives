@@ -2,15 +2,21 @@ import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, it } from 'vitest';
 import { ApiStack } from './api-stack';
+import { DataStack } from './data-stack';
 import { LocationStack } from './location-stack';
 
 let cached: Template | undefined;
 function synth(): Template {
   if (!cached) {
     const app = new App();
+    const data = new DataStack(app, 'DataStack');
     const location = new LocationStack(app, 'LocationStack');
     cached = Template.fromStack(
-      new ApiStack(app, 'ApiStack', { locationHandler: location.locationHandler }),
+      new ApiStack(app, 'ApiStack', {
+        locationHandler: location.locationHandler,
+        faresTable: data.fares,
+        ridesTable: data.rides,
+      }),
     );
   }
   return cached;
@@ -47,6 +53,24 @@ describe('api-stack (lld.md §2, §6)', () => {
   it('routes POST /drivers/location to the cross-stack location handler', () => {
     synth().hasResourceProperties('AWS::ApiGatewayV2::Route', {
       RouteKey: 'POST /drivers/location',
+    });
+  });
+
+  it('routes POST /fares and GET /rides/{rideId} (task 5.2)', () => {
+    const template = synth();
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', { RouteKey: 'POST /fares' });
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', { RouteKey: 'GET /rides/{rideId}' });
+  });
+
+  it('fares handler carries the config-matrix env (FARE_TTL_S, CITY_BBOX)', () => {
+    synth().hasResourceProperties('AWS::Lambda::Function', {
+      Environment: {
+        Variables: Match.objectLike({
+          FARES_TABLE: Match.anyValue(),
+          FARE_TTL_S: '300',
+          CITY_BBOX: '52.35,13.20,52.60,13.55',
+        }),
+      },
     });
   });
 });
