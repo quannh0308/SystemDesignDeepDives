@@ -1,0 +1,6 @@
+node_modules/
+cdk.out/
+coverage/
+# deploy/outputs.json carries the deploy-time SIM_SECRET (lld.md section 2.1) — never commit
+deploy/
+*.tsbuildinfo

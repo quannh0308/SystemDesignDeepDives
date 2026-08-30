@@ -1,0 +1,34 @@
+{
+  "name": "uber-like-rides",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lab build of the Uber-like ride hailing design (see design.md / lld.md)",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "lint": "eslint . && tsx scripts/check-deps.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "synth": "cdk synth --quiet",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run synth"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.1121.0",
+    "@aws-sdk/lib-dynamodb": "3.1121.0",
+    "@aws-sdk/util-dynamodb": "3.996.9",
+    "aws-cdk-lib": "2.267.0",
+    "constructs": "10.8.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.4.0",
+    "aws-cdk": "2.1139.0",
+    "eslint": "10.9.1",
+    "tsx": "4.23.13",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.68.0",
+    "vitest": "4.1.11"
+  }
+}

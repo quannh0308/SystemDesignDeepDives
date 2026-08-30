@@ -40,8 +40,8 @@ flowchart LR
     classDef done fill:#2e7d32,color:#fff,stroke:#1b5e20
     classDef active fill:#ff8f00,color:#fff,stroke:#e65100
     classDef pending fill:#1565c0,color:#fff,stroke:#0d47a1
-    class DESIGN,LLD,PLAN done
-    class T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,AWS pending
+    class DESIGN,LLD,PLAN,T1 done
+    class T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,AWS pending
 ```
 
 ## Ledger
@@ -58,6 +58,7 @@ Append-only. Corrections get a new row, never a rewrite.
 | 2026-08-30 | LLD diagrams added: concrete deployment diagrams 1a (request + location ingest, stack subgraphs) and 1b (matching path from the queue), every node a deployable resource with file path; Step Functions state graph in §5 | lld.md v2 | this commit |
 | 2026-08-30 | Build-depth tiers: inventory classified CORE (7: ride handler/store, location handler, sweeper, candidates, offer step, driver lock) / SUPPORTING (7 thin, incl. 4 glue components previously missing from the table; RoutingPort + offer-delivery port named as swap points) / HARNESS (4, never deployed; invariant auditor flagged correctness-critical). Dependency-direction lint added as task 1.4; tier requirement encoded in AGENTS.md contract | lld.md v3, tasks.md v3 | this commit |
 | 2026-08-30 | Correction (owner review): AWS gate moved T1→T7 — the account gates deployment only, development T1–T6 is fully local. Local-first rule added to plan header; missing per-task unit tests added (3.5 location logic, 5.3 fares/pricing); Redis client seam named in LLD §4 so CORE logic tests against fakes | tasks.md v4, ledger DAG v3, lld.md v4 | this commit |
+| 2026-08-30 | T1 CDK scaffold: npm project (deps exact-pinned, public registry), strict TS, vitest, eslint, 4-stack layout with tags + eu-central-1 default, dependency-direction lint (`scripts/check-deps.ts`, self-tested). Deviation from plan wording: hand-scaffolded instead of `cdk init` (template layout conflicts with repo `cdk/`+`src/` contract). Local gate `npm run check` green: lint + 0 runtime→harness imports + typecheck + 5 tests + synth of all 4 stacks | this commit | `npm run check` exit 0 |
 
 ## Open items (not DAG nodes)
 
