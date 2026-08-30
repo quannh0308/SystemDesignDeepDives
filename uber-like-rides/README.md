@@ -13,8 +13,38 @@ of truth) and [docs/ledger.md](./docs/ledger.md) (work DAG + history).
    altitude), ending in the Deep Dives that interrogate each decision.
 2. [docs/lld.md](./docs/lld.md) — the low-level design of the lab build: what
    actually deploys, contracts, schemas, and the production→lab substitution map.
-3. The code — every deep dive's `In the code:` line points at the files that
-   implement the decision.
+3. The code — start at the entry points below; every deep dive's
+   `In the code:` line points at the files that implement the decision.
+
+## Where to start in the code
+
+Read the four entry-point handlers; each fans out through everything it
+touches. Skip `cdk/` and `*.test.ts` on the first pass — they are spec and
+proof, not flow.
+
+1. [src/location/handler.ts](./src/location/handler.ts) — driver ping, the
+   write firehose. Fans out: [bbox.ts](./src/location/bbox.ts) (validation) →
+   [geo-client.ts](./src/location/geo-client.ts) (the seam) →
+   [geo-client.fake.ts](./src/location/geo-client.fake.ts) vs
+   [redis-geo-client.ts](./src/location/redis-geo-client.ts) (same interface:
+   test world vs real world) → [sweeper.ts](./src/location/sweeper.ts) (the
+   eviction half of the geo lifecycle).
+2. [src/fares/handler.ts](./src/fares/handler.ts) — rider asks for a price.
+   Fans out: [routing.ts](./src/fares/routing.ts) (the port + haversine) →
+   [pricing.ts](./src/fares/pricing.ts) →
+   [store.ts](./src/rides/store.ts) (`createFare`).
+3. [src/rides/handler.ts](./src/rides/handler.ts) — rider polls ride state,
+   the smallest entry. Fans out to
+   [store.ts](./src/rides/store.ts) — **the file that matters most**: the
+   conditional-write guards that enforce one-driver-one-ride. Read it fully
+   once you land there.
+4. [src/auth/authorizer.ts](./src/auth/authorizer.ts) — runs before every
+   handler above. Fans out: [token.ts](./src/auth/token.ts) (HMAC mint/verify)
+   → [http/api.ts](./src/http/api.ts) (`identityOf` — how handlers receive
+   who you are).
+
+Next in line: [src/matching/candidates.ts](./src/matching/candidates.ts) —
+not yet wired to a Lambda; the Step Functions matching loop (task 4) calls it.
 
 ## Run it
 

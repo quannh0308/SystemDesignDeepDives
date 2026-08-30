@@ -18,8 +18,11 @@ other.
 2. One directory per system design, kebab-case (`uber-like-rides/`,
    `scalable-notifications/`).
 3. Every design directory contains exactly this contract:
-   - `README.md` — landing page: what the design is, reading order, how to run
-     the local gate, directory map, design-specific working rules
+   - `README.md` — landing page: what the design is, reading order, and a
+     **"Where to start in the code" guide** — the entry-point handlers to read
+     first, each with its fan-out chain through the modules it touches
+     (fundamentals first, never setup); plus how to run the local gate,
+     directory map, design-specific working rules
    - `docs/hld.md` — the design document at interview altitude (structure below)
    - `docs/lld.md` — the low-level design of the lab build: production→lab
      substitution map, **concrete deployment diagrams** (Mermaid; every node is
