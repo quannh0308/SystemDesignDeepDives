@@ -1,14 +1,14 @@
 # Low-Level Design — Uber-like Ride Hailing (lab build)
 
-This document specifies the system we actually deploy. `design.md` answers the
+This document specifies the system we actually deploy. `hld.md` answers the
 interview question at production scale; this LLD defines the **scale model** of
 that design: identical architecture shapes (geo index, TTL locks, queue, durable
 orchestration, conditional-write guards), lab-scale parts. Every file path here
-matches `tasks.md`; every mechanism traces to a `design.md` section.
+matches `tasks.md`; every mechanism traces to a `hld.md` section.
 
 ## 0. Production → lab substitution map
 
-| design.md (production shape) | Lab build | What it preserves | What it knowingly loses |
+| hld.md (production shape) | Lab build | What it preserves | What it knowingly loses |
 |---|---|---|---|
 | Sharded Redis GEO cluster | 1× ElastiCache `cache.t4g.micro` | GEO command semantics, lock atomicity, per-shard contention behavior | absolute scale, cluster failover |
 | Service fleets | One Lambda per handler behind an HTTP API | stateless units, per-path scaling | warm connection pools, long-lived state |
@@ -23,7 +23,7 @@ matches `tasks.md`; every mechanism traces to a `design.md` section.
 
 Runtime: Node.js 22, TypeScript, one esbuild-bundled Lambda per entry.
 
-The abstract boxes of design.md §4 materialize as the exact resources below —
+The abstract boxes of hld.md §4 materialize as the exact resources below —
 split at the SQS handoff into the request/ingest paths and the matching path.
 Rectangles = Lambda (compute), cylinders = data stores, double brackets =
 queues; operations ride on the edges.
@@ -321,7 +321,7 @@ code via env — no constant duplicated in source.
 
 ## 9. Traceability
 
-| tasks.md | This LLD | design.md |
+| tasks.md | This LLD | hld.md |
 |---|---|---|
 | 1 scaffold | §6 | §4 |
 | 2 data stores | §3 | §5, DD 9.5 |

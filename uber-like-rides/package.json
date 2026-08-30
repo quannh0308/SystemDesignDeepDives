@@ -2,7 +2,7 @@
   "name": "uber-like-rides",
   "version": "0.1.0",
   "private": true,
-  "description": "Lab build of the Uber-like ride hailing design (see design.md / lld.md)",
+  "description": "Lab build of the Uber-like ride hailing design (see docs/hld.md / docs/lld.md)",
   "type": "module",
   "engines": {
     "node": ">=22"

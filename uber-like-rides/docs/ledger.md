@@ -7,7 +7,7 @@ Color = status (green done · amber in progress · blue pending). Shape = kind
 
 ```mermaid
 flowchart LR
-    DESIGN[design.md<br/>§1–§9 authored]
+    DESIGN[hld.md<br/>§1–§9 authored]
     LLD[lld.md<br/>build spec pinned]
     PLAN[tasks.md<br/>plan derived]
     T1[T1 CDK<br/>scaffold]
@@ -60,6 +60,7 @@ Append-only. Corrections get a new row, never a rewrite.
 | 2026-08-30 | Correction (owner review): AWS gate moved T1→T7 — the account gates deployment only, development T1–T6 is fully local. Local-first rule added to plan header; missing per-task unit tests added (3.5 location logic, 5.3 fares/pricing); Redis client seam named in LLD §4 so CORE logic tests against fakes | tasks.md v4, ledger DAG v3, lld.md v4 | this commit |
 | 2026-08-30 | T1 CDK scaffold: npm project (deps exact-pinned, public registry), strict TS, vitest, eslint, 4-stack layout with tags + eu-central-1 default, dependency-direction lint (`scripts/check-deps.ts`, self-tested). Deviation from plan wording: hand-scaffolded instead of `cdk init` (template layout conflicts with repo `cdk/`+`src/` contract). Local gate `npm run check` green: lint + 0 runtime→harness imports + typecheck + 5 tests + synth of all 4 stacks | this commit | `npm run check` exit 0 |
 | 2026-08-30 | T2 data stores: data-stack materialized — `fares` (TTL), `rides` (+ `driverId-status` KEYS_ONLY GSI, `riderId-createdAt` ALL GSI), `driver-offers` (TTL + NEW_AND_OLD_IMAGES stream), all on-demand + DESTROY, names/stream ARN exported; 7 template-assertion tests pin the schema. `src/rides/store.ts`: the four §3 guards verbatim as pure command builders + `markMatching`/`createRide`, executed by `RideStore` with typed 409 mapping (STALE_OFFER; useFare disambiguates FARE_ALREADY_USED / FARE_EXPIRED / not-found from the returned old image); 17 guard tests, no AWS. Gate green: 29 tests total | this commit | `npm run check` exit 0 |
+| 2026-08-30 | Directory restructure (owner decision): docs moved to `docs/` with design.md → hld.md (hld/lld pair); per-design README.md landing page added; root .gitignore (IDE metadata); repo contract updated (AGENTS.md file contract + workflow, root README layout/index) so future designs inherit the shape. Live references repointed in lld.md, code comments, package.json; historical ledger rows left as written per append-only rule | this commit | `npm run check` exit 0 |
 
 ## Open items (not DAG nodes)
 

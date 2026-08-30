@@ -18,8 +18,10 @@ other.
 2. One directory per system design, kebab-case (`uber-like-rides/`,
    `scalable-notifications/`).
 3. Every design directory contains exactly this contract:
-   - `design.md` — the design document at interview altitude (structure below)
-   - `lld.md` — the low-level design of the lab build: production→lab
+   - `README.md` — landing page: what the design is, reading order, how to run
+     the local gate, directory map, design-specific working rules
+   - `docs/hld.md` — the design document at interview altitude (structure below)
+   - `docs/lld.md` — the low-level design of the lab build: production→lab
      substitution map, **concrete deployment diagrams** (Mermaid; every node is
      a deployable resource — the actual Lambda/table/queue with its file path,
      never an abstract service box; compute and storage in separate boxes,
@@ -29,17 +31,22 @@ other.
      simulators/test tooling, never deployed, never imported by runtime), API
      contracts, attribute-level schemas, orchestration state graph, stack
      wiring, config matrix, and a tasks↔LLD↔design traceability table. Written
-     after design.md is agreed, before implementation starts — tasks.md
+     after hld.md is agreed, before implementation starts — tasks.md
      executes against it
-   - `tasks.md` — implementation plan, updated as work progresses (never stale)
-   - `ledger.md` — work DAG + append-only ledger
+   - `docs/tasks.md` — implementation plan, updated as work progresses (never stale)
+   - `docs/ledger.md` — work DAG + append-only ledger
    - `cdk/` — CDK app (TypeScript) deploying the infra
-   - `src/` — runtime logic (Lambda handlers, services, jobs)
+   - `src/` — runtime logic (Lambda handlers, services, jobs) and, in separate
+     subdirectories, the test harness (simulators, test data, load, e2e)
+   - `scripts/` — design-local tooling (e.g. the dependency-direction lint);
+     never deployed
+   Toolchain manifests (`package.json`, `tsconfig.json`, `cdk.json`, test/lint
+   configs) live at the design root — the tools resolve them there.
 4. Git: agents commit locally and push feature branches (`git push -u origin <branch>`).
    Pushes to `main` are performed by the repo owner. Never force-push.
 5. Update the Designs index table in `README.md` when a design is added or changes status.
 
-## design.md structure
+## hld.md structure
 
 Follow this section skeleton. Cut sections that genuinely don't apply; never pad.
 
@@ -175,12 +182,12 @@ Two parts, both mandatory:
 
 1. **Discuss** — owner feeds the prompt (e.g. "Uber-like system"); agent asks the
    interview-style clarifying questions before writing anything.
-2. **Design** — write `design.md` §1-§8 at interview altitude, review together,
+2. **Design** — write `docs/hld.md` §1-§8 at interview altitude, review together,
    then draft the Deep Dives as decisions get locked.
-3. **Specify** — write `lld.md`: pin the lab substitutions, contracts, schemas,
-   and wiring the build will follow. design.md stays interview-clean; the LLD
+3. **Specify** — write `docs/lld.md`: pin the lab substitutions, contracts, schemas,
+   and wiring the build will follow. hld.md stays interview-clean; the LLD
    carries the buildable truth.
-4. **Plan** — derive `tasks.md` from the LLD; seed `ledger.md` with the DAG.
+4. **Plan** — derive `docs/tasks.md` from the LLD; seed `docs/ledger.md` with the DAG.
 5. **Build** — execute tasks on a feature branch; keep tasks.md checkboxes and
    ledger.md current in the same commits; wire each deep dive's `In the code:`
    line as its implementation lands.

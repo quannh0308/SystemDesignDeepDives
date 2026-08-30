@@ -11,7 +11,7 @@ import type { Construct } from 'constructs';
 /**
  * Stateful stores (lld.md §3, §6). All tables on-demand and DESTROY — the lab
  * is built to be torn down; durability of the system of record is a
- * production-shape concern (design.md §5), not a lab one.
+ * production-shape concern (hld.md §5), not a lab one.
  */
 export class DataStack extends Stack {
   readonly fares: Table;

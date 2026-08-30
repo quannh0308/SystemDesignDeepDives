@@ -2,7 +2,7 @@
  * System-of-record helpers for `rides` and `fares` (lld.md §3).
  *
  * The conditional-write guards below are the final arbiter of ride state
- * (design.md Deep Dive 9.2): locks and workflow state only reduce contention,
+ * (hld.md Deep Dive 9.2): locks and workflow state only reduce contention,
  * the guarded write decides. Guards are exposed as pure command builders so
  * their expressions unit-test without AWS; `RideStore` executes them and maps
  * `ConditionalCheckFailedException` to typed domain errors (lld.md §2.2).
@@ -204,7 +204,7 @@ export function buildAcceptRide(
   };
 }
 
-/** The attempt pin makes a delayed release harmless after a re-offer (design.md Deep Dive 9.2). */
+/** The attempt pin makes a delayed release harmless after a re-offer (hld.md Deep Dive 9.2). */
 export function buildReleaseOffer(
   table: string,
   rideId: string,
