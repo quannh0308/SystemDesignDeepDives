@@ -21,10 +21,10 @@ Checkbox state is the source of truth; update in the same commit as the work.
   - [x] 1.4 Dependency-direction lint: runtime code (`src/{fares,rides,location,matching}`) must not import from harness dirs (`src/{sim,testdata,load,e2e}`) — build fails on violation
   - _Design: §4_
 
-- [ ] 2. Data stores — system of record
-  - [ ] 2.1 `fares` table (TTL on `expiresAt`), `rides` table + `driverId-status` GSI + `riderId-createdAt` GSI, `driver-offers` table (TTL)
-  - [ ] 2.2 `src/rides/store.ts`: typed helpers incl. conditional-write guards (`MATCHING→OFFERED`, `OFFERED→ACCEPTED` with owner condition)
-  - [ ] 2.3 Unit tests for the state-machine guards (pure logic, no AWS)
+- [x] 2. Data stores — system of record
+  - [x] 2.1 `fares` table (TTL on `expiresAt`), `rides` table + `driverId-status` GSI + `riderId-createdAt` GSI, `driver-offers` table (TTL)
+  - [x] 2.2 `src/rides/store.ts`: typed helpers incl. conditional-write guards (`MATCHING→OFFERED`, `OFFERED→ACCEPTED` with owner condition)
+  - [x] 2.3 Unit tests for the state-machine guards (pure logic, no AWS)
   - _Design: §5, Deep Dive 9.5_
 
 - [ ] 3. Location path — the write firehose

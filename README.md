@@ -30,7 +30,7 @@ Each design directory is self-contained: read `design.md` top to bottom to prep 
 
 | System | Status | One-liner |
 |---|---|---|
-| [uber-like-rides](./uber-like-rides/design.md) | 📐 Designed | Ride-hailing marketplace: geo matching under a 2M-writes/s location firehose, one-offer-one-driver consistency, burst-proof request queueing |
+| [uber-like-rides](./uber-like-rides/design.md) | 🚧 Building (T2/11) | Ride-hailing marketplace: geo matching under a 2M-writes/s location firehose, one-offer-one-driver consistency, burst-proof request queueing |
 
 ## Conventions
 
