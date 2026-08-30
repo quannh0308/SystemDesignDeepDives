@@ -4,6 +4,13 @@ Execution order follows the dependency chain: build (1–5) → test assets (6) 
 live (7) → e2e (8) → load (9) → drills (10) → receipts + teardown (11). The
 system is *testable by construction*: every NFR in design §2.2 maps to a numbered
 test task below (NFR-1 → 9.2, NFR-2 → 8.3 + 9.2, NFR-3 → 9.2/9.3, NFR-4 → 10.2).
+
+**Local-first rule:** tasks 1–6 are development — each is done only when its own
+local tests pass (`npm test` + `cdk synth` + lint), with zero AWS access needed.
+The AWS account is a **deploy gate on task 7 only**; it never blocks development.
+Redis-touching logic unit-tests against the client seam (LLD §4) with fakes;
+integration against real Redis happens from task 7 onward.
+
 Checkbox state is the source of truth; update in the same commit as the work.
 `[ ]` not started · `[-]` in progress · `[x]` done.
 
@@ -25,6 +32,7 @@ Checkbox state is the source of truth; update in the same commit as the work.
   - [ ] 3.2 `POST /drivers/location` → `src/location/handler.ts`: validate, `GEOADD` + `ZADD` ts
   - [ ] 3.3 `src/location/sweeper.ts` on a 1-min schedule: evict members stale >30 s from both keys
   - [ ] 3.4 `src/matching/candidates.ts`: `GEOSEARCH` radius 5 km ASC limit 10, active-ride filter
+  - [ ] 3.5 Unit tests (local, fake geo/lock client): bbox validation rejects out-of-city pings, sweeper selects exactly the >30 s-stale members, candidate ranking honors exclusions and the active-ride filter
   - _Design: §6.3, Deep Dives 9.1, 9.6_
 
 - [ ] 4. Matching path — queue, orchestrator, locks
@@ -38,6 +46,7 @@ Checkbox state is the source of truth; update in the same commit as the work.
 - [ ] 5. Fare service
   - [ ] 5.1 Routing provider port (`src/fares/routing.ts`) with haversine + city-speed lab implementation
   - [ ] 5.2 `POST /fares`: price = f(distance, duration), 5-min expiry; `GET /rides/{id}` for state polling
+  - [ ] 5.3 Unit tests: haversine against known city-pair distances, pricing monotonicity (longer ride never cheaper), fare expiry boundary
   - _Design: §6.1_
 
 - [ ] 6. Test data generation — reproducible worlds to test against

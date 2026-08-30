@@ -21,10 +21,9 @@ flowchart LR
     T9[T9 Load tests:<br/>firehose, burst, soak]
     T10[T10 Failure<br/>drills]
     T11[T11 Receipts +<br/>teardown]
-    AWS{{AWS account<br/>bootstrapped for CDK}}
+    AWS{{AWS account<br/>bootstrapped — deploy gate}}
 
     DESIGN --> LLD --> PLAN --> T1
-    AWS --> T1
     T1 --> T2
     T2 --> T3
     T2 --> T5
@@ -33,6 +32,7 @@ flowchart LR
     T5 --> T6
     T4 --> T7
     T5 --> T7
+    AWS --> T7
     T6 --> T8
     T7 --> T8
     T8 --> T9 --> T10 --> T11
@@ -57,9 +57,10 @@ Append-only. Corrections get a new row, never a rewrite.
 | 2026-08-30 | LLD authored: production→lab substitution map, component inventory (exact tasks.md file paths), API contract incl. lab HMAC auth, attribute-level DDB schemas with verbatim guard expressions, Redis key/command spec, Step Functions state list, stack wiring + config matrix, tasks↔LLD↔design traceability. Repo contract updated (AGENTS.md workflow gains Specify step; README layout; design.md pointer) | lld.md v1 | this commit |
 | 2026-08-30 | LLD diagrams added: concrete deployment diagrams 1a (request + location ingest, stack subgraphs) and 1b (matching path from the queue), every node a deployable resource with file path; Step Functions state graph in §5 | lld.md v2 | this commit |
 | 2026-08-30 | Build-depth tiers: inventory classified CORE (7: ride handler/store, location handler, sweeper, candidates, offer step, driver lock) / SUPPORTING (7 thin, incl. 4 glue components previously missing from the table; RoutingPort + offer-delivery port named as swap points) / HARNESS (4, never deployed; invariant auditor flagged correctness-critical). Dependency-direction lint added as task 1.4; tier requirement encoded in AGENTS.md contract | lld.md v3, tasks.md v3 | this commit |
+| 2026-08-30 | Correction (owner review): AWS gate moved T1→T7 — the account gates deployment only, development T1–T6 is fully local. Local-first rule added to plan header; missing per-task unit tests added (3.5 location logic, 5.3 fares/pricing); Redis client seam named in LLD §4 so CORE logic tests against fakes | tasks.md v4, ledger DAG v3, lld.md v4 | this commit |
 
 ## Open items (not DAG nodes)
 
-- AWS account for the lab deploy: confirm account + `cdk bootstrap` before T1.
+- AWS account: confirm + `cdk bootstrap` before **T7 (go live)** — it gates deployment only; development T1–T6 is fully local (synth, lint, unit tests, fixtures) and never blocks on it.
 - Lab Redis sizing: single `cache.t4g.micro` node assumed (~$0.4/day while up); T9.5 will find its actual saturation point.
 - Load-test scale honesty: lab targets 1k pings/s (single node), standing in for the design's 20k/s city figure — proves per-shard behavior and contention correctness, not absolute scale.

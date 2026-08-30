@@ -242,9 +242,12 @@ Single logical DB, keys namespaced:
 | `geo:drivers:ts` | ZSET | location handler | `ZADD` per ping · `ZRANGEBYSCORE -inf (now-30s)` + `ZREM` (sweeper) |
 | `lock:driver:{driverId}` | STRING | driver-lock lib | acquire `SET key rideId NX PX 10000` · release = Lua compare-and-DEL (only if value == rideId — never release another ride's lock) |
 
-Client: `ioredis`, 2 s command timeout, zero retries on lock acquire — a
-timeout counts as "driver busy, next candidate". Fail toward liveness;
-correctness stays guarded by the conditional writes.
+Client: `ioredis` behind a minimal seam (`GeoClient` / `LockClient` interfaces
+in `src/matching/driver-lock.ts` and the location/candidates modules) — CORE
+logic unit-tests against in-memory fakes of the seam; the real ioredis adapter
+is exercised from task 7 onward. 2 s command timeout, zero retries on lock
+acquire — a timeout counts as "driver busy, next candidate". Fail toward
+liveness; correctness stays guarded by the conditional writes.
 
 ## 5. Match orchestration (Step Functions, standard workflow)
 
