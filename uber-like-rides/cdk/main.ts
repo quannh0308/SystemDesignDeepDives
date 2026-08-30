@@ -7,14 +7,20 @@ import { MatchingStack } from './stacks/matching-stack';
 
 const app = new App();
 
+// Region pinned (tasks.md 1.3); account deliberately unset — synth stays
+// fully local (no credential/context lookups, local-first rule) and the
+// account binds at deploy time (task 7).
 const env = {
-  account: process.env.CDK_DEFAULT_ACCOUNT,
   region: process.env.CDK_DEFAULT_REGION ?? 'eu-central-1',
 };
 
 new DataStack(app, 'DataStack', { env, stackName: 'uber-rides-data-stack' });
-new LocationStack(app, 'LocationStack', { env, stackName: 'uber-rides-location-stack' });
-new ApiStack(app, 'ApiStack', { env, stackName: 'uber-rides-api-stack' });
+const location = new LocationStack(app, 'LocationStack', { env, stackName: 'uber-rides-location-stack' });
+new ApiStack(app, 'ApiStack', {
+  env,
+  stackName: 'uber-rides-api-stack',
+  locationHandler: location.locationHandler,
+});
 new MatchingStack(app, 'MatchingStack', { env, stackName: 'uber-rides-matching-stack' });
 
 applyProjectTags(app);

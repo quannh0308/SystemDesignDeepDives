@@ -10,8 +10,15 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const RUNTIME_DIRS = ['fares', 'rides', 'location', 'matching'];
 export const HARNESS_DIRS = ['sim', 'testdata', 'load', 'e2e'];
+
+/** Runtime = every top-level dir under src/ that is not harness — new runtime dirs are covered automatically. */
+export function runtimeDirsOf(srcRoot: string): string[] {
+  if (!existsSync(srcRoot)) return [];
+  return readdirSync(srcRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !HARNESS_DIRS.includes(entry.name))
+    .map((entry) => entry.name);
+}
 
 const IMPORT_RE = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)['"]([^'"]+)['"]/g;
 
@@ -45,9 +52,8 @@ function walk(dir: string): string[] {
 
 export function findViolations(srcRoot: string): Violation[] {
   const violations: Violation[] = [];
-  for (const runtimeDir of RUNTIME_DIRS) {
+  for (const runtimeDir of runtimeDirsOf(srcRoot)) {
     const root = join(srcRoot, runtimeDir);
-    if (!existsSync(root)) continue;
     for (const file of walk(root)) {
       for (const specifier of extractImports(readFileSync(file, 'utf8'))) {
         if (isHarnessImport(file, specifier, srcRoot)) violations.push({ file, specifier });

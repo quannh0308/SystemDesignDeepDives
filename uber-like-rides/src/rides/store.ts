@@ -11,10 +11,12 @@ import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
 import {
   GetCommand,
   PutCommand,
+  QueryCommand,
   UpdateCommand,
   type GetCommandOutput,
   type PutCommandInput,
   type PutCommandOutput,
+  type QueryCommandOutput,
   type UpdateCommandInput,
   type UpdateCommandOutput,
 } from '@aws-sdk/lib-dynamodb';
@@ -246,6 +248,7 @@ export function buildUseFare(table: string, fareId: string, rideId: string, now:
 export interface StoreClient {
   send(command: GetCommand): Promise<GetCommandOutput>;
   send(command: PutCommand): Promise<PutCommandOutput>;
+  send(command: QueryCommand): Promise<QueryCommandOutput>;
   send(command: UpdateCommand): Promise<UpdateCommandOutput>;
 }
 
@@ -272,6 +275,25 @@ export class RideStore {
   async getRide(rideId: string): Promise<Ride | undefined> {
     const out = await this.client.send(new GetCommand({ TableName: this.tables.rides, Key: { rideId } }));
     return out.Item as Ride | undefined;
+  }
+
+  /**
+   * Active-ride filter for the candidate finder (lld.md §1): Query the
+   * `driverId-status` GSI (keys-only) and check for any active status
+   * client-side — Query cannot express IN on a sort key, and a driver's
+   * ride count is tiny.
+   */
+  async hasActiveRide(driverId: string): Promise<boolean> {
+    const out = await this.client.send(
+      new QueryCommand({
+        TableName: this.tables.rides,
+        IndexName: 'driverId-status',
+        KeyConditionExpression: 'driverId = :d',
+        ExpressionAttributeValues: { ':d': driverId },
+      }),
+    );
+    const statuses = (out.Items ?? []).map((item) => item.status as RideStatus);
+    return statuses.some((s) => ACTIVE_DRIVER_STATUSES.includes(s));
   }
 
   async getFare(fareId: string): Promise<Fare | undefined> {

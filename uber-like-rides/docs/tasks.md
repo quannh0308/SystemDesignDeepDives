@@ -18,7 +18,7 @@ Checkbox state is the source of truth; update in the same commit as the work.
   - [x] 1.1 TypeScript CDK app (hand-scaffolded to the repo layout instead of `cdk init`, whose nested template fights the `cdk/` + `src/` contract), pinned deps, `npm test` wired
   - [x] 1.2 Stack layout: `data-stack` (stateful), `location-stack` (Redis + VPC), `api-stack` (gateway + ride/location handlers), `matching-stack` (queue + state machine + matcher lambdas)
   - [x] 1.3 Tags (`project`, `design`), region default eu-central-1, `cdk synth` green
-  - [x] 1.4 Dependency-direction lint: runtime code (`src/{fares,rides,location,matching}`) must not import from harness dirs (`src/{sim,testdata,load,e2e}`) — build fails on violation
+  - [x] 1.4 Dependency-direction lint: runtime code (every `src/` dir except the harness dirs `src/{sim,testdata,load,e2e}`) must not import from harness dirs — build fails on violation
   - _Design: §4_
 
 - [x] 2. Data stores — system of record
@@ -27,12 +27,12 @@ Checkbox state is the source of truth; update in the same commit as the work.
   - [x] 2.3 Unit tests for the state-machine guards (pure logic, no AWS)
   - _Design: §5, Deep Dive 9.5_
 
-- [ ] 3. Location path — the write firehose
-  - [ ] 3.1 Minimal VPC + single-node ElastiCache (lab-scale stand-in for the sharded cluster; same GEO API)
-  - [ ] 3.2 `POST /drivers/location` → `src/location/handler.ts`: validate, `GEOADD` + `ZADD` ts
-  - [ ] 3.3 `src/location/sweeper.ts` on a 1-min schedule: evict members stale >30 s from both keys
-  - [ ] 3.4 `src/matching/candidates.ts`: `GEOSEARCH` radius 5 km ASC limit 10, active-ride filter
-  - [ ] 3.5 Unit tests (local, fake geo/lock client): bbox validation rejects out-of-city pings, sweeper selects exactly the >30 s-stale members, candidate ranking honors exclusions and the active-ride filter
+- [x] 3. Location path — the write firehose
+  - [x] 3.1 Minimal VPC + single-node ElastiCache (lab-scale stand-in for the sharded cluster; same GEO API)
+  - [x] 3.2 `POST /drivers/location` → `src/location/handler.ts`: validate, `GEOADD` + `ZADD` ts
+  - [x] 3.3 `src/location/sweeper.ts` on a 1-min schedule: evict members stale >30 s from both keys
+  - [x] 3.4 `src/matching/candidates.ts`: `GEOSEARCH` radius 5 km ASC limit 10, active-ride filter
+  - [x] 3.5 Unit tests (local, fake geo/lock client): bbox validation rejects out-of-city pings, sweeper selects exactly the >30 s-stale members, candidate ranking honors exclusions and the active-ride filter
   - _Design: §6.3, Deep Dives 9.1, 9.6_
 
 - [ ] 4. Matching path — queue, orchestrator, locks
