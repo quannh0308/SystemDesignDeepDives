@@ -107,22 +107,59 @@ flowchart LR
     OFFERS_T -.->|DynamoDB stream| AUDIT_L
 ```
 
-| Component | File | Trigger | Writes to | Reads from |
-|---|---|---|---|---|
-| Fare handler | `src/fares/handler.ts` | `POST /fares` | `fares` | routing port |
-| Routing port | `src/fares/routing.ts` | (lib) | — | — |
-| Ride handler | `src/rides/handler.ts` | `POST /rides`, `GET /rides/{id}`, `PATCH /rides/{id}` | `rides`, match queue, SFN task token | `fares`, `rides` |
-| Ride store | `src/rides/store.ts` | (lib) | `rides` conditional writes | `rides` |
-| Location handler | `src/location/handler.ts` | `POST /drivers/location` | Redis GEO + ts ZSET | — |
-| Stale sweeper | `src/location/sweeper.ts` | EventBridge 1/min | Redis (evictions) | Redis ts ZSET |
-| Candidate finder | `src/matching/candidates.ts` | SFN state | — | Redis GEOSEARCH, `rides` GSI |
-| Offer step | `src/matching/offer.ts` | SFN state (waitForTaskToken) | Redis lock, `rides`, `driver-offers` | — |
-| Driver lock lib | `src/matching/driver-lock.ts` | (lib) | Redis `SET NX` / Lua release | — |
-| Fail step | `src/matching/fail.ts` | SFN state | `rides` → `FAILED` | — |
-| Invariant auditor | `src/e2e/invariants.ts` | e2e/load harness | — | `rides`, offer audit |
-| Test data gens | `src/testdata/{city,fleet,demand}.ts` | CLI `npm run gen` | `fixtures/` | — |
-| Simulators | `src/sim/{driver-sim,rider-sim}.ts` | CLI | HTTP API | `fixtures/`, `deploy/outputs.json` |
-| Load runner | `src/load/runner.ts` | CLI | HTTP API | `fixtures/` |
+### Build-depth tiers
+
+Every component carries a tier that sets its quality bar — this is what keeps
+the build clean (no accidental depth in glue) and scalable (all depth
+concentrated where the design's guarantees live):
+
+- **CORE — build in depth.** These components *are* the system: they carry the
+  design's deep dives and the NFR guarantees. Full rigor: input validation,
+  error taxonomy, idempotency, unit tests per guard/branch, no shortcuts.
+  Scalability lives here by construction — stateless Lambdas, on-demand
+  DynamoDB, one Step Functions execution per ride all scale horizontally; the
+  single Redis node is the one deliberate lab bottleneck (its saturation point
+  is measured, not guessed, in task 9).
+- **SUPPORTING — build clean, deliberately thin.** Real deployed code, but
+  minimal by design: straight-line logic, no speculative features. Where a
+  supporting component stands in for a production capability it sits behind a
+  **port** so CORE code never knows: `RoutingPort` (haversine today, a real
+  maps adapter later, `src/fares/handler.ts` unchanged) and the offer-delivery
+  contract (the `driver-offers` table today, an APNs/FCM push adapter later,
+  `src/matching/offer.ts` unchanged).
+- **HARNESS — simulator and test tooling, never deployed.** Everything under
+  `src/sim/`, `src/testdata/`, `src/load/`, `src/e2e/` runs from the dev
+  machine and emulates the world outside the system boundary (mobile apps,
+  demand) or measures the system from outside. Quality bar: deterministic and
+  readable. One exception to "test-tool casual": the invariant auditor is
+  correctness-critical harness — it is the proof mechanism for NFR-2, so its
+  assertions get CORE-level review.
+
+Dependency direction is enforced, not hoped for: runtime code
+(`src/{fares,rides,location,matching}`) must never import from harness
+directories — lint rule in task 1.4. In the deployment diagrams above, HARNESS
+is exactly the set of nodes outside every stack subgraph.
+
+| Component | Tier | File | Trigger | Writes to | Reads from |
+|---|---|---|---|---|---|
+| Ride handler | CORE | `src/rides/handler.ts` | `POST /rides`, `GET /rides/{id}`, `PATCH /rides/{id}` | `rides`, match queue, SFN task token | `fares`, `rides` |
+| Ride store (guards) | CORE | `src/rides/store.ts` | (lib) | `rides` conditional writes | `rides` |
+| Location handler | CORE | `src/location/handler.ts` | `POST /drivers/location` | Redis GEO + ts ZSET | — |
+| Stale sweeper | CORE | `src/location/sweeper.ts` | EventBridge 1/min | Redis (evictions) | Redis ts ZSET |
+| Candidate finder | CORE | `src/matching/candidates.ts` | SFN state | — | Redis GEOSEARCH, `rides` GSI |
+| Offer step | CORE | `src/matching/offer.ts` | SFN state (waitForTaskToken) | Redis lock, `rides`, `driver-offers` | — |
+| Driver lock lib | CORE | `src/matching/driver-lock.ts` | (lib) | Redis `SET NX` / Lua release | — |
+| Fare handler | SUPPORTING | `src/fares/handler.ts` | `POST /fares` | `fares` | RoutingPort |
+| Routing stand-in | SUPPORTING (port) | `src/fares/routing.ts` | (lib) | — | — |
+| Offer-poll endpoint | SUPPORTING (port face) | part of api-stack | `GET /drivers/offer` | — | `driver-offers` |
+| HMAC authorizer | SUPPORTING | part of api-stack | every request | — | `SIM_SECRET` |
+| SQS→SFN pump | SUPPORTING | part of matching-stack | SQS batch | SFN StartExecution | match queue |
+| Fail step | SUPPORTING | `src/matching/fail.ts` | SFN state | `rides` → `FAILED` | — |
+| Offer-audit writer | SUPPORTING | part of matching-stack | DDB stream | offer-audit log | `driver-offers` stream |
+| Invariant auditor | HARNESS (correctness-critical) | `src/e2e/invariants.ts` | e2e/load harness | — | `rides`, offer audit |
+| Test data gens | HARNESS | `src/testdata/{city,fleet,demand}.ts` | CLI `npm run gen` | `fixtures/` | — |
+| Simulators | HARNESS | `src/sim/{driver-sim,rider-sim}.ts` | CLI | HTTP API | `fixtures/`, `deploy/outputs.json` |
+| Load runner | HARNESS | `src/load/runner.ts` | CLI | HTTP API | `fixtures/` |
 
 VPC placement: only Redis-touching Lambdas (location handler, sweeper,
 candidates, offer) run in the VPC. DynamoDB access from inside uses the free

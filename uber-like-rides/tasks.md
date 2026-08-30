@@ -11,6 +11,7 @@ Checkbox state is the source of truth; update in the same commit as the work.
   - [ ] 1.1 `cdk init` TypeScript app under `cdk/`, pinned deps, `npm test` wired
   - [ ] 1.2 Stack layout: `data-stack` (stateful), `location-stack` (Redis + VPC), `api-stack` (gateway + ride/location handlers), `matching-stack` (queue + state machine + matcher lambdas)
   - [ ] 1.3 Tags (`project`, `design`), region default eu-central-1, `cdk synth` green
+  - [ ] 1.4 Dependency-direction lint: runtime code (`src/{fares,rides,location,matching}`) must not import from harness dirs (`src/{sim,testdata,load,e2e}`) — build fails on violation
   - _Design: §4_
 
 - [ ] 2. Data stores — system of record

@@ -23,7 +23,10 @@ other.
      substitution map, **concrete deployment diagrams** (Mermaid; every node is
      a deployable resource — the actual Lambda/table/queue with its file path,
      never an abstract service box; compute and storage in separate boxes,
-     operations on edges), component inventory with exact file paths, API
+     operations on edges), component inventory with exact file paths and
+     **build-depth tiers** (CORE = full rigor where the guarantees live ·
+     SUPPORTING = deliberately thin, stand-ins behind ports · HARNESS =
+     simulators/test tooling, never deployed, never imported by runtime), API
      contracts, attribute-level schemas, orchestration state graph, stack
      wiring, config matrix, and a tasks↔LLD↔design traceability table. Written
      after design.md is agreed, before implementation starts — tasks.md
