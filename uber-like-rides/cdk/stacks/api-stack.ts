@@ -5,6 +5,8 @@ import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations
 import type { ITable } from 'aws-cdk-lib/aws-dynamodb';
 import type { IFunction } from 'aws-cdk-lib/aws-lambda';
 import { Secret } from 'aws-cdk-lib/aws-secretsmanager';
+import type { IQueue } from 'aws-cdk-lib/aws-sqs';
+import type { StateMachine } from 'aws-cdk-lib/aws-stepfunctions';
 import type { Construct } from 'constructs';
 import { CONFIG } from '../config';
 import { nodeFn } from '../lambda';
@@ -14,6 +16,9 @@ export interface ApiStackProps extends StackProps {
   locationHandler: IFunction;
   faresTable: ITable;
   ridesTable: ITable;
+  offersTable: ITable;
+  matchQueue: IQueue;
+  stateMachine: StateMachine;
 }
 
 /**
@@ -72,13 +77,38 @@ export class ApiStack extends Stack {
 
     const ridesFn = nodeFn(this, 'RidesFn', {
       entry: 'rides/handler.ts',
-      environment: { RIDES_TABLE: props.ridesTable.tableName },
+      environment: {
+        RIDES_TABLE: props.ridesTable.tableName,
+        FARES_TABLE: props.faresTable.tableName,
+        OFFERS_TABLE: props.offersTable.tableName,
+        MATCH_QUEUE_URL: props.matchQueue.queueUrl,
+      },
     });
-    props.ridesTable.grantReadData(ridesFn);
+    props.ridesTable.grantReadWriteData(ridesFn); // getRide + createRide + acceptRide guard
+    props.faresTable.grantReadWriteData(ridesFn); // getFare + useFare guard
+    props.offersTable.grantReadWriteData(ridesFn); // offer row lookup + conditional delete
+    props.matchQueue.grantSendMessages(ridesFn);
+    props.stateMachine.grantTaskResponse(ridesFn); // SendTaskSuccess / SendTaskFailure
+    this.httpApi.addRoutes({
+      path: '/rides',
+      methods: [HttpMethod.POST],
+      integration: new HttpLambdaIntegration('RidesCreateIntegration', ridesFn),
+    });
     this.httpApi.addRoutes({
       path: '/rides/{rideId}',
-      methods: [HttpMethod.GET],
+      methods: [HttpMethod.GET, HttpMethod.PATCH],
       integration: new HttpLambdaIntegration('RidesIntegration', ridesFn),
+    });
+
+    const offerPollFn = nodeFn(this, 'OfferPollFn', {
+      entry: 'matching/offer-poll.ts',
+      environment: { OFFERS_TABLE: props.offersTable.tableName },
+    });
+    props.offersTable.grantReadData(offerPollFn);
+    this.httpApi.addRoutes({
+      path: '/drivers/offer',
+      methods: [HttpMethod.GET],
+      integration: new HttpLambdaIntegration('OfferPollIntegration', offerPollFn),
     });
 
     new CfnOutput(this, 'ApiUrl', { value: this.httpApi.apiEndpoint });

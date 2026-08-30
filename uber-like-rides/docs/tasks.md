@@ -35,12 +35,12 @@ Checkbox state is the source of truth; update in the same commit as the work.
   - [x] 3.5 Unit tests (local, fake geo/lock client): bbox validation rejects out-of-city pings, sweeper selects exactly the >30 s-stale members, candidate ranking honors exclusions and the active-ride filter
   - _Design: §6.3, Deep Dives 9.1, 9.6_
 
-- [ ] 4. Matching path — queue, orchestrator, locks
-  - [ ] 4.1 Match queue + DLQ + oldest-message-age alarm; `POST /rides` persists then enqueues
-  - [ ] 4.2 Step Functions state machine: candidates → Map(offer → wait accept-token/10 s → branch) → exhausted/budget → `FAILED`
-  - [ ] 4.3 `src/matching/driver-lock.ts`: `SET NX PX 10000` acquire, owner-checked release
-  - [ ] 4.4 Offer write + notification enqueue; accept handler `PATCH /rides/{id}` completes the task token
-  - [ ] 4.5 Unit tests: lock contention (both-matchers-race), stale accept 409, idempotent re-offer
+- [x] 4. Matching path — queue, orchestrator, locks
+  - [x] 4.1 Match queue + DLQ + oldest-message-age alarm; `POST /rides` persists then enqueues
+  - [x] 4.2 Step Functions state machine: candidates → offer (waitForTaskToken, 10 s) → accept resolves · decline/timeout/lock-busy → release + exclude → loop → exhausted/budget → `FAILED`
+  - [x] 4.3 `src/matching/driver-lock.ts`: `SET NX PX 10000` acquire, owner-checked release
+  - [x] 4.4 Offer write + notification enqueue; accept handler `PATCH /rides/{id}` completes the task token
+  - [x] 4.5 Unit tests: lock contention (both-matchers-race), stale accept 409, idempotent re-offer
   - _Design: §6.2, §6.4, Deep Dives 9.2, 9.3, 9.4_
 
 - [x] 5. Fare service

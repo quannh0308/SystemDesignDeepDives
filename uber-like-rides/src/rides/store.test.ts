@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAcceptRide,
   buildCreateRide,
+  buildMarkFailed,
   buildMarkMatching,
   buildMarkOffered,
   buildReleaseOffer,
@@ -13,6 +14,7 @@ import {
   FareUnavailableError,
   LostMatchRaceError,
   RideAlreadyExistsError,
+  RideAlreadyTerminalError,
   RideNotMatchableError,
   RideStore,
   StaleOfferError,
@@ -100,6 +102,13 @@ describe('guard expressions match lld.md §3 verbatim', () => {
     expect(cmd.ExpressionAttributeValues).toEqual({ ':r': 'ride-1', ':now': 7000 });
     expect(cmd.ReturnValuesOnConditionCheckFailure).toBe('ALL_OLD');
   });
+
+  it('markFailed: drives any pre-acceptance state terminal, never clobbers ACCEPTED or CANCELLED', () => {
+    const cmd = buildMarkFailed(TABLES.rides, 'ride-1', 9000);
+    expect(cmd.UpdateExpression).toBe('SET #status = :failed, terminalAt = :now');
+    expect(cmd.ConditionExpression).toBe('#status = :requested OR #status = :matching OR #status = :offered');
+    expect(cmd.ExpressionAttributeValues).toMatchObject({ ':failed': 'FAILED', ':now': 9000 });
+  });
 });
 
 describe('RideStore maps conditional failures to typed guard errors', () => {
@@ -111,6 +120,10 @@ describe('RideStore maps conditional failures to typed guard errors', () => {
 
   it('markMatching → RideNotMatchableError (e.g. rider cancelled before matching)', async () => {
     await expect(failing.markMatching('ride-1')).rejects.toBeInstanceOf(RideNotMatchableError);
+  });
+
+  it('markFailed → RideAlreadyTerminalError (ride accepted or cancelled first — callers swallow)', async () => {
+    await expect(failing.markFailed('ride-1', 9000)).rejects.toBeInstanceOf(RideAlreadyTerminalError);
   });
 
   it('markOffered → LostMatchRaceError (ride left MATCHING first)', async () => {

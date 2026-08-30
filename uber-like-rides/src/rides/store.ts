@@ -9,10 +9,12 @@
  */
 import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
 import {
+  DeleteCommand,
   GetCommand,
   PutCommand,
   QueryCommand,
   UpdateCommand,
+  type DeleteCommandOutput,
   type GetCommandOutput,
   type PutCommandInput,
   type PutCommandOutput,
@@ -136,6 +138,15 @@ export class FareUnavailableError extends Error {
   }
 }
 
+/** markFailed guard failed: the ride is already terminal or accepted — never clobber. Ignorable. */
+export class RideAlreadyTerminalError extends Error {
+  readonly code = 'RIDE_ALREADY_TERMINAL';
+  constructor(rideId: string) {
+    super(`Ride ${rideId} already left the matching states`);
+    this.name = 'RideAlreadyTerminalError';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Pure command builders — expressions verbatim from lld.md §3
 // ---------------------------------------------------------------------------
@@ -242,12 +253,36 @@ export function buildUseFare(table: string, fareId: string, rideId: string, now:
   };
 }
 
+/**
+ * Terminal FAILED. Covers REQUESTED/MATCHING (no candidates, budget spent) and
+ * OFFERED (workflow died mid-offer — the ride must still reach a terminal
+ * state; a late accept then gets a clean STALE_OFFER 409). Never touches
+ * ACCEPTED or CANCELLED: the guard, not the caller, arbitrates.
+ */
+export function buildMarkFailed(table: string, rideId: string, now: number): UpdateCommandInput {
+  return {
+    TableName: table,
+    Key: { rideId },
+    UpdateExpression: 'SET #status = :failed, terminalAt = :now',
+    ConditionExpression: '#status = :requested OR #status = :matching OR #status = :offered',
+    ExpressionAttributeNames: STATUS_ALIAS,
+    ExpressionAttributeValues: {
+      ':failed': 'FAILED',
+      ':requested': 'REQUESTED',
+      ':matching': 'MATCHING',
+      ':offered': 'OFFERED',
+      ':now': now,
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Executor
 // ---------------------------------------------------------------------------
 
 /** Structural subset of DynamoDBDocumentClient — lets tests inject a fake sender. */
 export interface StoreClient {
+  send(command: DeleteCommand): Promise<DeleteCommandOutput>;
   send(command: GetCommand): Promise<GetCommandOutput>;
   send(command: PutCommand): Promise<PutCommandOutput>;
   send(command: QueryCommand): Promise<QueryCommandOutput>;
@@ -343,6 +378,15 @@ export class RideStore {
       await this.client.send(new UpdateCommand(buildReleaseOffer(this.tables.rides, rideId, driverId, attempt)));
     } catch (error) {
       if (error instanceof ConditionalCheckFailedException) throw new StaleReleaseError(rideId);
+      throw error;
+    }
+  }
+
+  async markFailed(rideId: string, now: number): Promise<void> {
+    try {
+      await this.client.send(new UpdateCommand(buildMarkFailed(this.tables.rides, rideId, now)));
+    } catch (error) {
+      if (error instanceof ConditionalCheckFailedException) throw new RideAlreadyTerminalError(rideId);
       throw error;
     }
   }

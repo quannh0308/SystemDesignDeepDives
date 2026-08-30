@@ -40,8 +40,8 @@ flowchart LR
     classDef done fill:#2e7d32,color:#fff,stroke:#1b5e20
     classDef active fill:#ff8f00,color:#fff,stroke:#e65100
     classDef pending fill:#1565c0,color:#fff,stroke:#0d47a1
-    class DESIGN,LLD,PLAN,T1,T2,T3,T5 done
-    class T4,T6,T7,T8,T9,T10,T11,AWS pending
+    class DESIGN,LLD,PLAN,T1,T2,T3,T4,T5 done
+    class T6,T7,T8,T9,T10,T11,AWS pending
 ```
 
 ## Ledger
@@ -64,6 +64,7 @@ Append-only. Corrections get a new row, never a rewrite.
 | 2026-08-30 | T3 location path: GeoClient seam + in-memory fake with real ZSET/geo semantics; location handler (bbox validation, identity from token never body); sweeper (strict >30 s bound, boundary member survives); candidate finder (GEOSEARCH ASC → minus excluded → minus active via rides GSI lookup); ioredis adapter (2 s timeout, exercised from T7). api-stack materialized: HTTP API + deploy-time SIM_SECRET + HMAC authorizer default on every route; location-stack: isolated VPC (0 NAT), 1× cache.t4g.micro, DDB gateway endpoint, 1-min sweep rule. check-deps generalized: runtime = src/* minus harness (auto-covers new `auth`/`http` dirs). Synth made account-agnostic — ambient expired AWS creds were failing synth; local-first now holds at synth too. Gate: 56 tests | this commit | `npm run check` exit 0 |
 | 2026-08-30 | T5 fare service: RoutingPort + city-speed lab routing (24 km/h over haversine); pricing 300 + 120/km + 25/min EUR cents, monotonicity pinned; `POST /fares` handler (bbox 400, rider-only 403, §2.2 contract shape, expiresAt in epoch seconds = the TTL/guard unit, createdAt in ms — units split documented on the Fare type); `GET /rides/{rideId}` polling endpoint (404 taxonomy); `createFare` on the store; api-stack routes both behind the authorizer with table grants. Gate: 75 tests, 13 files | this commit | `npm run check` exit 0 |
 | 2026-08-30 | Reader onboarding (owner decision): README gains "Where to start in the code" — the four entry-point handlers with their fan-out chains, store.ts flagged as the file that matters most, cdk/ + tests marked skip-on-first-pass. Requirement encoded in the AGENTS.md README contract so every future design ships one | this commit | docs-only |
+| 2026-08-30 | T4 matching path: driver lock (SET NX PX + Lua owner-checked release, in-memory fake with real TTL semantics); offer step (lock → markOffered guard → offer row w/ task token, every rung self-healing); release step (guarded release pinned to driver+attempt, conditional row delete, lock release — one idempotent path serves timeout/decline/lock-busy); markFailed guard covers OFFERED so a dead workflow still drives rides terminal; POST /rides (useFare arbiter → persist → enqueue, order test-pinned) + PATCH accept/decline (token resolved strictly after the guard, pinned); offer-poll (204/200, token never exposed); offer-audit table fed by the stream (INSERT/MODIFY/REMOVE mapping, token never copied); SQS→SFN pump (execution name = rideId dedupe, per-item batch failures → DLQ). matching-stack: queue+DLQ(3), state machine (10 s offer window, 120 s backstop), 3 alarms + dashboard. Two LLD deltas recorded in-doc: 60 s budget travels as deadlineMs (ASL workflow timeout is uncatchable) and the SQS/SFN interface endpoints were dropped (nothing in the VPC calls them). Gate: 111 tests, 17 files | this commit | `npm run check` exit 0 |
 
 ## Open items (not DAG nodes)
 

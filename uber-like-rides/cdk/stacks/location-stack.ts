@@ -23,6 +23,9 @@ import { nodeFn } from '../lambda';
  */
 export class LocationStack extends Stack {
   readonly locationHandler: NodejsFunction;
+  readonly vpc: Vpc;
+  readonly lambdaSecurityGroup: SecurityGroup;
+  readonly redisEndpoint: string;
 
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
@@ -33,6 +36,7 @@ export class LocationStack extends Stack {
       subnetConfiguration: [{ name: 'isolated', subnetType: SubnetType.PRIVATE_ISOLATED, cidrMask: 24 }],
     });
     vpc.addGatewayEndpoint('DynamoEndpoint', { service: GatewayVpcEndpointAwsService.DYNAMODB });
+    this.vpc = vpc;
 
     const lambdaSg = new SecurityGroup(this, 'LambdaSg', { vpc, allowAllOutbound: true });
     const redisSg = new SecurityGroup(this, 'RedisSg', { vpc, allowAllOutbound: false });
@@ -51,6 +55,8 @@ export class LocationStack extends Stack {
     });
 
     const redisEndpoint = `${redis.attrRedisEndpointAddress}:${redis.attrRedisEndpointPort}`;
+    this.lambdaSecurityGroup = lambdaSg;
+    this.redisEndpoint = redisEndpoint;
     const vpcPlacement = {
       vpc,
       vpcSubnets: { subnetType: SubnetType.PRIVATE_ISOLATED },

@@ -4,6 +4,7 @@ import { describe, it } from 'vitest';
 import { ApiStack } from './api-stack';
 import { DataStack } from './data-stack';
 import { LocationStack } from './location-stack';
+import { MatchingStack } from './matching-stack';
 
 let cached: Template | undefined;
 function synth(): Template {
@@ -11,11 +12,21 @@ function synth(): Template {
     const app = new App();
     const data = new DataStack(app, 'DataStack');
     const location = new LocationStack(app, 'LocationStack');
+    const matching = new MatchingStack(app, 'MatchingStack', {
+      ridesTable: data.rides,
+      offersTable: data.offers,
+      vpc: location.vpc,
+      lambdaSecurityGroup: location.lambdaSecurityGroup,
+      redisEndpoint: location.redisEndpoint,
+    });
     cached = Template.fromStack(
       new ApiStack(app, 'ApiStack', {
         locationHandler: location.locationHandler,
         faresTable: data.fares,
         ridesTable: data.rides,
+        offersTable: data.offers,
+        matchQueue: matching.matchQueue,
+        stateMachine: matching.stateMachine,
       }),
     );
   }
@@ -56,10 +67,18 @@ describe('api-stack (lld.md §2, §6)', () => {
     });
   });
 
-  it('routes POST /fares and GET /rides/{rideId} (task 5.2)', () => {
+  it('routes the complete §2.2 surface (task 4.1/4.4 additions included)', () => {
     const template = synth();
-    template.hasResourceProperties('AWS::ApiGatewayV2::Route', { RouteKey: 'POST /fares' });
-    template.hasResourceProperties('AWS::ApiGatewayV2::Route', { RouteKey: 'GET /rides/{rideId}' });
+    for (const routeKey of [
+      'POST /fares',
+      'POST /rides',
+      'GET /rides/{rideId}',
+      'PATCH /rides/{rideId}',
+      'POST /drivers/location',
+      'GET /drivers/offer',
+    ]) {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', { RouteKey: routeKey });
+    }
   });
 
   it('fares handler carries the config-matrix env (FARE_TTL_S, CITY_BBOX)', () => {

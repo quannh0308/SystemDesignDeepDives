@@ -16,13 +16,24 @@ const env = {
 
 const data = new DataStack(app, 'DataStack', { env, stackName: 'uber-rides-data-stack' });
 const location = new LocationStack(app, 'LocationStack', { env, stackName: 'uber-rides-location-stack' });
+const matching = new MatchingStack(app, 'MatchingStack', {
+  env,
+  stackName: 'uber-rides-matching-stack',
+  ridesTable: data.rides,
+  offersTable: data.offers,
+  vpc: location.vpc,
+  lambdaSecurityGroup: location.lambdaSecurityGroup,
+  redisEndpoint: location.redisEndpoint,
+});
 new ApiStack(app, 'ApiStack', {
   env,
   stackName: 'uber-rides-api-stack',
   locationHandler: location.locationHandler,
   faresTable: data.fares,
   ridesTable: data.rides,
+  offersTable: data.offers,
+  matchQueue: matching.matchQueue,
+  stateMachine: matching.stateMachine,
 });
-new MatchingStack(app, 'MatchingStack', { env, stackName: 'uber-rides-matching-stack' });
 
 applyProjectTags(app);

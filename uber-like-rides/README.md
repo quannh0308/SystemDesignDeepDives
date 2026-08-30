@@ -42,9 +42,14 @@ proof, not flow.
    handler above. Fans out: [token.ts](./src/auth/token.ts) (HMAC mint/verify)
    → [http/api.ts](./src/http/api.ts) (`identityOf` — how handlers receive
    who you are).
-
-Next in line: [src/matching/candidates.ts](./src/matching/candidates.ts) —
-not yet wired to a Lambda; the Step Functions matching loop (task 4) calls it.
+5. The matching path — read it in workflow order:
+   [pump.ts](./src/matching/pump.ts) (SQS → one execution per ride) →
+   [candidates.ts](./src/matching/candidates.ts) (budget deadline + search) →
+   [offer.ts](./src/matching/offer.ts) with
+   [driver-lock.ts](./src/matching/driver-lock.ts) (lock → guard → offer row) →
+   [release.ts](./src/matching/release.ts) (the one idempotent failure path) →
+   back to [rides/handler.ts](./src/rides/handler.ts) `PATCH` (accept resolves
+   the task token only after the guard).
 
 ## Run it
 

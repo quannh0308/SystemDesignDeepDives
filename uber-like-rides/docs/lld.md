@@ -155,6 +155,7 @@ is exactly the set of nodes outside every stack subgraph.
 | HMAC authorizer | SUPPORTING | part of api-stack | every request | — | `SIM_SECRET` |
 | SQS→SFN pump | SUPPORTING | part of matching-stack | SQS batch | SFN StartExecution | match queue |
 | Fail step | SUPPORTING | `src/matching/fail.ts` | SFN state | `rides` → `FAILED` | — |
+| Release step | SUPPORTING | `src/matching/release.ts` | SFN state (timeout/decline/lock-busy) | `rides` guarded release, `driver-offers` delete, lock release | — |
 | Offer-audit writer | SUPPORTING | part of matching-stack | DDB stream | offer-audit log | `driver-offers` stream |
 | Invariant auditor | HARNESS (correctness-critical) | `src/e2e/invariants.ts` | e2e/load harness | — | `rides`, offer audit |
 | Test data gens | HARNESS | `src/testdata/{city,fleet,demand}.ts` | CLI `npm run gen` | `fixtures/` | — |
@@ -253,7 +254,8 @@ liveness; correctness stays guarded by the conditional writes.
 
 Execution name = `rideId`, so duplicate SQS deliveries cannot start a second
 workflow (`ExecutionAlreadyExists` swallowed by the SQS→SFN pump Lambda).
-Input: `{rideId, pickup, excluded: []}`.
+Input: `{rideId, pickup, priceCents, excluded: [], deadlineMs}` — the pump
+stamps `deadlineMs = now + MATCH_BUDGET_S` so the budget travels with the ride.
 
 ```mermaid
 flowchart LR
@@ -277,18 +279,24 @@ flowchart LR
 6. `States.Timeout` or task failure (decline → `SendTaskFailure`) → `ReleaseOffer` (guarded release + lock release + offer row delete) → append driver to `excluded` → `GetCandidates`.
 7. `MarkFailed` — terminal `FAILED`.
 
-Workflow-level `TimeoutSeconds: 60` (design NFR-1) with catch → `MarkFailed`.
-Handlers resolve the token only *after* their conditional write succeeds — the
-ride record, not the workflow, is the source of truth.
+The 60 s budget (design NFR-1) is enforced *inside* the workflow: GetCandidates
+reports no candidates once `deadlineMs` has passed, which routes to the guarded
+`MarkFailed` (a workflow-level timeout cannot be caught in ASL, and an aborted
+execution would leave the ride non-terminal). The state machine's own
+`TimeoutSeconds: 120` is a backstop only. `markFailed` also covers OFFERED so a
+workflow that dies mid-offer still drives the ride terminal — a late accept
+then gets a clean `STALE_OFFER`. Handlers resolve the token only *after* their
+conditional write succeeds — the ride record, not the workflow, is the source
+of truth.
 
 ## 6. CDK stacks and wiring
 
 | Stack | Contains | Exports |
 |---|---|---|
 | `data-stack` | 3 tables + `driver-offers` stream | table names/ARNs |
-| `location-stack` | VPC (2 AZ, private-isolated), ElastiCache single node, SGs, DynamoDB **gateway** endpoint (free), Step Functions + SQS **interface** endpoints (≈$8/mo each while deployed — teardown-sensitive) | Redis endpoint, VPC/SG ids |
+| `location-stack` | VPC (2 AZ, private-isolated), ElastiCache single node, SGs, DynamoDB **gateway** endpoint (free). No SQS/SFN interface endpoints: nothing inside the VPC calls them — the pump and the rides handler (task-token responses) run outside | Redis endpoint, VPC/SG ids |
 | `api-stack` | HTTP API, HMAC authorizer, fare/ride/location/offer handlers, `SIM_SECRET` | `apiUrl` |
-| `matching-stack` | queue + DLQ (maxReceiveCount 3), SQS→SFN pump, state machine, matcher Lambdas, offer-audit stream handler, dashboard + 2 paging alarms (match p99, oldest-message age) | state machine ARN |
+| `matching-stack` | queue + DLQ (maxReceiveCount 3), SQS→SFN pump, state machine, matcher Lambdas, offer-audit table + stream writer, dashboard + 3 paging alarms (match p99, oldest-message age, DLQ non-empty) | queue URL, state machine ARN, audit table |
 
 `cdk deploy --all --outputs-file deploy/outputs.json` — that file is the single
 config source for smoke, e2e, simulators, and load (tasks 7–9).
