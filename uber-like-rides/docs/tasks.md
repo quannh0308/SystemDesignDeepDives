@@ -49,11 +49,11 @@ Checkbox state is the source of truth; update in the same commit as the work.
   - [x] 5.3 Unit tests: haversine against known city-pair distances, pricing monotonicity (longer ride never cheaper), fare expiry boundary
   - _Design: §6.1_
 
-- [ ] 6. Test data generation — reproducible worlds to test against
-  - [ ] 6.1 `src/testdata/city.ts`: synthetic city model on a real bounding box (Berlin), road-grid snap, seeded RNG — same seed ⇒ same world, so every test run is comparable
-  - [ ] 6.2 `src/testdata/fleet.ts`: driver fleet generator with placement distributions (uniform | downtown-weighted | airport-cluster) and behavior profiles (accept probability, think time, shift length)
-  - [ ] 6.3 `src/testdata/demand.ts`: rider demand generator — steady Poisson arrivals, rush-hour ramp, and hotspot burst (N requests, one neighborhood, M minutes) matching the design's 100k-same-metro scenario shape
-  - [ ] 6.4 Fixture CLI: `npm run gen -- --seed 42 --drivers 200 --profile rush` writes versioned JSON fixtures under `fixtures/`; unit-test the generators' invariants (bounds, distributions, determinism)
+- [x] 6. Test data generation — reproducible worlds to test against
+  - [x] 6.1 `src/testdata/city.ts`: synthetic city model on a real bounding box (Berlin), road-grid snap, seeded RNG — same seed ⇒ same world, so every test run is comparable
+  - [x] 6.2 `src/testdata/fleet.ts`: driver fleet generator with placement distributions (uniform | downtown-weighted | airport-cluster) and behavior profiles (accept probability, think time, shift length)
+  - [x] 6.3 `src/testdata/demand.ts`: rider demand generator — steady Poisson arrivals, rush-hour ramp, and hotspot burst (N requests, one neighborhood, M minutes) matching the design's 100k-same-metro scenario shape
+  - [x] 6.4 Fixture CLI: `npm run gen -- --seed 42 --drivers 200 --profile rush` writes versioned JSON fixtures under `fixtures/`; unit-test the generators' invariants (bounds, distributions, determinism)
   - _Design: §2.2 scale assumptions, Deep Dive 9.6_
 
 - [ ] 7. Go live — deploy and prove the system breathes

@@ -11,6 +11,7 @@
     "lint": "eslint . && tsx scripts/check-deps.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "gen": "tsx src/testdata/gen.ts",
     "synth": "cdk synth --quiet",
     "check": "npm run lint && npm run typecheck && npm run test && npm run synth"
   },

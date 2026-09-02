@@ -5,4 +5,6 @@ coverage/
 deploy/
 # context cache holds account-numbered lookup results once deploys start — public repo, keep out
 cdk.context.json
+# generated test worlds — reproducible from their seed (npm run gen), never committed
+fixtures/
 *.tsbuildinfo

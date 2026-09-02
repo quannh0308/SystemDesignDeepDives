@@ -56,6 +56,7 @@ proof, not flow.
 ```bash
 npm install
 npm run check   # the local gate: lint + dependency-direction + typecheck + tests + synth
+npm run gen -- --seed 42 --drivers 200 --profile rush   # write a replayable world to fixtures/
 ```
 
 Tasks 1–6 are fully local — no AWS account needed. Deploying (task 7 onward)

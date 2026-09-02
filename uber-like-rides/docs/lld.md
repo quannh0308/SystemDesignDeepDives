@@ -321,7 +321,7 @@ code via env — no constant duplicated in source.
 
 ## 8. Test architecture (tasks 6–10)
 
-- **Fixtures** (`fixtures/*.json`): `{seed, city, drivers[{id, start, profile:{acceptP, thinkMs, cadence}}], demand[{atMs, pickup, dest}]}` — generated, versioned, replayable.
+- **Fixtures** (`fixtures/*.json`): `{version, seed, profile, placement, city, drivers[{id, start, profile:{acceptP, thinkMs, cadenceS, shiftMin}}], demand[{atMs, pickup, dest}]}` — `atMs` are offsets from run start so a fixture replays at any wall-clock time; same flags ⇒ byte-identical file; regenerated from the seed (`npm run gen`), never committed.
 - **Smoke** (`npm run smoke`): the 4 checks of tasks 7.2 against §2 endpoints, <60 s total, non-zero exit gates the LIVE gate.
 - **E2E** (`npm run e2e`): vitest; each spec = fixture world + scenario + **invariant audit**. The auditor pulls all `rides` rows for the spec's `runId` plus the offer-audit trail and asserts: per driver, offer intervals never overlap; per ride, at most one driverId ever ACCEPTED; every ride terminal.
 - **Load** (`npm run load -- --scenario firehose|burst|soak`): worker pool, per-request latency records → p50/p95/p99 summary; the burst scenario ends with the same invariant audit over the whole run.
