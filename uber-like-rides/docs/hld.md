@@ -306,7 +306,7 @@ back up a mirror.
 **Decision:** Redis GEO. NFR-4 explicitly ranks freshness over durability for
 locations, and the recovery argument makes the durability loss a non-event.
 
-**In the code (planned — task 3):** `cdk/lib/location-stack.ts` (ElastiCache +
+**In the code:** `cdk/stacks/location-stack.ts` (ElastiCache +
 sweeper schedule), `src/location/handler.ts` (GEOADD ingest),
 `src/location/sweeper.ts` (stale eviction), `src/matching/candidates.ts`
 (GEOSEARCH).
@@ -339,8 +339,10 @@ bounded by the ride-side conditional write, which remains the final arbiter).
 ride record as the durable backstop (defense in depth: the lock prevents the
 race, the conditional write makes it harmless if it ever happens).
 
-**In the code (planned — task 4):** `src/matching/driver-lock.ts` (acquire/release
-with owner check), `src/rides/accept.ts` (conditional `OFFERED→ACCEPTED`).
+**In the code:** `src/matching/driver-lock.ts` (acquire/release
+with owner check), `src/rides/store.ts` (`acceptRide` guard: conditional
+`OFFERED→ACCEPTED` with owner condition), `src/rides/handler.ts` (the task
+token is resolved only after the guard succeeds).
 
 ### 9.3 Why a queue between ride creation and matching, not a direct call?
 
@@ -365,8 +367,9 @@ conditional writes), one more component.
 Uber scale; a lab that needs ordering-free work distribution with a DLQ needs
 SQS's operational surface, not a cluster.
 
-**In the code (planned — task 4):** `cdk/lib/matching-stack.ts` (queue + DLQ +
-depth alarm), `src/rides/request.ts` (enqueue after persist).
+**In the code:** `cdk/stacks/matching-stack.ts` (queue + DLQ +
+oldest-message-age alarm), `src/rides/handler.ts` (enqueue after persist),
+`src/matching/pump.ts` (execution-name dedupe on redelivery).
 
 ### 9.4 Why durable execution for the offer loop, not delay-queue bookkeeping?
 
@@ -391,9 +394,10 @@ learning curve.
 **Decision:** Step Functions (this is Temporal's home turf too — same pattern;
 Step Functions keeps the lab serverless and free-tier-friendly).
 
-**In the code (planned — task 4):** `cdk/lib/matching-stack.ts` (state machine
-definition: Map over candidates, `waitForTaskToken` accept-signal, timeouts),
-`src/matching/*.ts` (per-state Lambdas).
+**In the code:** `cdk/stacks/matching-stack.ts` (state machine:
+offer → `waitForTaskToken` accept-signal → release-and-exclude loop, timeouts),
+`src/matching/candidates.ts`, `src/matching/offer.ts`, `src/matching/release.ts`,
+`src/matching/fail.ts` (per-state Lambdas).
 
 ### 9.5 Why DynamoDB for rides and fares, not Postgres?
 
@@ -418,7 +422,7 @@ finance), that workload belongs in an analytical replica, not in this
 transactional path — at which point CDC into a warehouse beats swapping the
 primary store.
 
-**In the code (planned — task 2):** `cdk/lib/data-stack.ts` (tables, GSIs,
+**In the code:** `cdk/stacks/data-stack.ts` (tables, GSIs,
 TTLs), `src/rides/store.ts` (conditional-write helpers).
 
 ### 9.6 Why do clients decide their own location-update cadence?
@@ -438,5 +442,7 @@ tolerate the slowest legitimate cadence.
 **Decision:** adaptive client cadence, server treats cadence as untrusted input
 (sweeper + freshness checks are server-side).
 
-**In the code (planned — task 6):** `src/sim/driver-sim.ts` (the lab's driver
-simulator implements the adaptive policy; production would ship it in the app).
+**In the code:** `src/testdata/fleet.ts` (per-driver `cadenceS` in fixture
+behavior profiles); the driver simulator that applies the adaptive policy
+arrives with the e2e/load harness (`src/sim/driver-sim.ts`, tasks 8–9) —
+production would ship it in the app.

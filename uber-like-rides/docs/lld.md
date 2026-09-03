@@ -151,12 +151,12 @@ is exactly the set of nodes outside every stack subgraph.
 | Driver lock lib | CORE | `src/matching/driver-lock.ts` | (lib) | Redis `SET NX` / Lua release | — |
 | Fare handler | SUPPORTING | `src/fares/handler.ts` | `POST /fares` | `fares` | RoutingPort |
 | Routing stand-in | SUPPORTING (port) | `src/fares/routing.ts` | (lib) | — | — |
-| Offer-poll endpoint | SUPPORTING (port face) | part of api-stack | `GET /drivers/offer` | — | `driver-offers` |
-| HMAC authorizer | SUPPORTING | part of api-stack | every request | — | `SIM_SECRET` |
-| SQS→SFN pump | SUPPORTING | part of matching-stack | SQS batch | SFN StartExecution | match queue |
+| Offer-poll endpoint | SUPPORTING (port face) | `src/matching/offer-poll.ts` | `GET /drivers/offer` | — | `driver-offers` |
+| HMAC authorizer | SUPPORTING | `src/auth/authorizer.ts` (+ `src/auth/token.ts`) | every request | — | `SIM_SECRET` |
+| SQS→SFN pump | SUPPORTING | `src/matching/pump.ts` | SQS batch | SFN StartExecution | match queue |
 | Fail step | SUPPORTING | `src/matching/fail.ts` | SFN state | `rides` → `FAILED` | — |
 | Release step | SUPPORTING | `src/matching/release.ts` | SFN state (timeout/decline/lock-busy) | `rides` guarded release, `driver-offers` delete, lock release | — |
-| Offer-audit writer | SUPPORTING | part of matching-stack | DDB stream | offer-audit log | `driver-offers` stream |
+| Offer-audit writer | SUPPORTING | `src/matching/offer-audit.ts` | DDB stream | offer-audit table | `driver-offers` stream |
 | Invariant auditor | HARNESS (correctness-critical) | `src/e2e/invariants.ts` | e2e/load harness | — | `rides`, offer audit |
 | Test data gens | HARNESS | `src/testdata/{city,fleet,demand}.ts` | CLI `npm run gen` | `fixtures/` | — |
 | Simulators | HARNESS | `src/sim/{driver-sim,rider-sim}.ts` | CLI | HTTP API | `fixtures/`, `deploy/outputs.json` |

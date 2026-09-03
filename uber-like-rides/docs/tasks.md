@@ -84,7 +84,7 @@ Checkbox state is the source of truth; update in the same commit as the work.
   - [ ] 10.3 Poison message → DLQ path: malformed ride request lands in DLQ with alarm, healthy traffic unaffected
   - _Design: §8, Deep Dives 9.1, 9.2_
 
-- [ ] 11. Receipts + teardown
-  - [ ] 11.1 Flip every design §9 "In the code (planned)" to concrete file links as they land
+- [-] 11. Receipts + teardown
+  - [x] 11.1 Flip every design §9 "In the code (planned)" to concrete file links as they land
   - [ ] 11.2 `cdk destroy` leaves the account clean (verify: no orphaned VPC/ENI/tables/log groups); README index status → Built + load-tested
   - _Design: §9, AGENTS.md ground rules_
