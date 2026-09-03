@@ -279,7 +279,7 @@ dashboards, not pages.
 
 ## 9. Deep Dives
 
-### 9.1 Why an in-memory geo index for driver locations, not the ride database?
+### 9.1 How do we absorb ~2M location writes/s and still answer "drivers within 5 km" fast?
 
 **The question behind the question:** what does 2M writes/s of *disposable* data
 do to a durable store, and when is losing data fine?
@@ -305,13 +305,24 @@ back up a mirror.
 
 **Decision:** Redis GEO. NFR-4 explicitly ranks freshness over durability for
 locations, and the recovery argument makes the durability loss a non-event.
+How the radius query stays correct at geohash cell boundaries is its own
+mechanism — Deep Dive 9.7.
+
+```mermaid
+flowchart LR
+    DC[Driver App<br/>ping every 2-30 s] -->|POST /drivers/location| LS[Location Service]
+    LS -->|GEOADD overwrite<br/>newest fix wins| GEO[(Redis GEO<br/>geo:drivers, sharded by city)]
+    LS -->|ZADD last-ping ts| TS[(geo:drivers:ts)]
+    SW[Sweeper 1/min] -->|evict stale >30 s<br/>from both keys| GEO
+    MS[Matcher] -->|GEOSEARCH 5 km<br/>ASC COUNT 10| GEO
+```
 
 **In the code:** `cdk/stacks/location-stack.ts` (ElastiCache +
 sweeper schedule), `src/location/handler.ts` (GEOADD ingest),
 `src/location/sweeper.ts` (stale eviction), `src/matching/candidates.ts`
 (GEOSEARCH).
 
-### 9.2 Why a distributed lock with TTL for offers, not a status column?
+### 9.2 How do we guarantee each driver holds at most one ride offer at a time?
 
 **The question behind the question:** where does mutual exclusion live when the
 service enforcing it can crash?
@@ -339,12 +350,32 @@ bounded by the ride-side conditional write, which remains the final arbiter).
 ride record as the durable backstop (defense in depth: the lock prevents the
 race, the conditional write makes it harmless if it ever happens).
 
+**How the guarantee actually runs** — two matchers race for driver D:
+1. Both execute `SET lock:driver:D <rideId> NX PX 10000`. NX means exactly one
+   wins; the loser treats D as busy and moves to its next candidate.
+2. The winner runs the ride-side guard: `status=OFFERED, driverId=D` only if
+   `status = MATCHING`. Even if a leaked lock ever let two matchers through,
+   the second guard write fails — the record, not the lock, is the arbiter.
+3. Only then is the offer row written (D's poll surface) and the accept path
+   armed. Accept runs its own owner-checked guard (`status = OFFERED AND
+   driverId = :caller`), so a stale or hijacked accept gets a clean 409.
+How D becomes available again when nobody answers is Deep Dive 9.8.
+
+```mermaid
+flowchart LR
+    MA[Matcher A<br/>ride 1] -->|1 SET NX PX 10s — wins| LOCK[(Redis lock:driver:D<br/>value = ride 1)]
+    MB[Matcher B<br/>ride 2] -.->|1 SET NX — loses,<br/>next candidate| LOCK
+    MA -->|2 markOffered guard<br/>only if status MATCHING| RIDES[(DynamoDB rides)]
+    MA -->|3 offer row + task token| OFF[(DynamoDB driver-offers)]
+    D[Driver D] -->|accept guard: OFFERED<br/>AND driverId = caller| RIDES
+```
+
 **In the code:** `src/matching/driver-lock.ts` (acquire/release
 with owner check), `src/rides/store.ts` (`acceptRide` guard: conditional
 `OFFERED→ACCEPTED` with owner condition), `src/rides/handler.ts` (the task
 token is resolved only after the guard succeeds).
 
-### 9.3 Why a queue between ride creation and matching, not a direct call?
+### 9.3 How do we ensure no ride request is dropped during peak demand?
 
 **The question behind the question:** what happens to the 100k-requests spike if
 matching is synchronous?
@@ -365,13 +396,26 @@ conditional writes), one more component.
 
 **Decision:** SQS. Kafka's regional partitions + replay are the right answer at
 Uber scale; a lab that needs ordering-free work distribution with a DLQ needs
-SQS's operational surface, not a cluster.
+SQS's operational surface, not a cluster. The no-drop guarantee is the chain:
+the ride row is durable before the enqueue; SQS redelivers until the consumer
+succeeds (at-least-once); duplicate deliveries collapse because the workflow
+execution name is the rideId; a poison message stops burning retries after 3
+receives and lands in the DLQ with an alarm — isolated, never silently gone.
+
+```mermaid
+flowchart LR
+    RS[Ride Service] -->|1 persist REQUESTED| RIDES[(DynamoDB rides)]
+    RS -->|2 enqueue rideId| MQ[[SQS match-queue]]
+    MQ -->|at-least-once delivery| PUMP[Pump]
+    PUMP -->|StartExecution<br/>name = rideId dedupes| SFN[Step Functions matcher]
+    MQ -.->|3 failed receives| DLQ[[DLQ + paging alarm]]
+```
 
 **In the code:** `cdk/stacks/matching-stack.ts` (queue + DLQ +
 oldest-message-age alarm), `src/rides/handler.ts` (enqueue after persist),
 `src/matching/pump.ts` (execution-name dedupe on redelivery).
 
-### 9.4 Why durable execution for the offer loop, not delay-queue bookkeeping?
+### 9.4 How does the offer → timeout → next-driver loop survive crashes mid-flight?
 
 **The question behind the question:** the offer/timeout/next-driver loop is a
 multi-step process with a human in the middle — where does its state live when
@@ -394,12 +438,22 @@ learning curve.
 **Decision:** Step Functions (this is Temporal's home turf too — same pattern;
 Step Functions keeps the lab serverless and free-tier-friendly).
 
+```mermaid
+flowchart LR
+    GC[GetCandidates<br/>budget check + search] --> CH{any<br/>left?}
+    CH -->|yes| OFF[OfferToDriver<br/>waitForTaskToken · 10 s]
+    OFF -->|accept resolved token| DONE([ACCEPTED])
+    OFF -->|timeout · decline<br/>· lock busy| REL[ReleaseOffer<br/>unwind + exclude driver]
+    REL --> GC
+    CH -->|no, or 60 s budget spent| MF[MarkFailed — guarded]
+```
+
 **In the code:** `cdk/stacks/matching-stack.ts` (state machine:
 offer → `waitForTaskToken` accept-signal → release-and-exclude loop, timeouts),
 `src/matching/candidates.ts`, `src/matching/offer.ts`, `src/matching/release.ts`,
 `src/matching/fail.ts` (per-state Lambdas).
 
-### 9.5 Why DynamoDB for rides and fares, not Postgres?
+### 9.5 How should rides and fares be stored — DynamoDB or Postgres?
 
 **The question behind the question:** does anything here need relational power,
 and what does the lab's idle time cost?
@@ -425,7 +479,7 @@ primary store.
 **In the code:** `cdk/stacks/data-stack.ts` (tables, GSIs,
 TTLs), `src/rides/store.ts` (conditional-write helpers).
 
-### 9.6 Why do clients decide their own location-update cadence?
+### 9.6 How do we cut the location write load without losing match accuracy?
 
 **The question behind the question:** can we cut the 2M/s write load without
 buying hardware — and who has the information to do it?
@@ -446,3 +500,97 @@ tolerate the slowest legitimate cadence.
 behavior profiles); the driver simulator that applies the adaptive policy
 arrives with the e2e/load harness (`src/sim/driver-sim.ts`, tasks 8–9) —
 production would ship it in the app.
+
+### 9.7 How do proximity searches avoid missing drivers near geohash cell boundaries?
+
+**The question behind the question:** geohash turns 2-D proximity into 1-D
+prefix similarity — where does that mapping lie to you?
+
+**The trap (naive prefix search):** store each driver's geohash string and
+answer "drivers near P" by matching P's prefix. Two points 50 m apart can sit
+in cells that share *no* prefix — cell edges are discontinuities, and the worst
+ones (major cell boundaries) split city centers. A rider on one side of the
+line gets matched to a farther driver while a nearer one idles across the
+boundary. Silent, systematic, and location-dependent — the nastiest bug class.
+
+**The standard fix (neighbor expansion):** pick the cell precision whose cell
+size is at least the search radius, then query the center cell *plus its 8
+neighbors*, and exact-distance-filter the union. Nine range scans and a
+haversine check per candidate — correctness restored at ~9x the index reads.
+
+**What we run (Redis GEOSEARCH):** Redis stores members as 52-bit interleaved
+geohash scores in a sorted set. `GEOSEARCH … BYRADIUS 5 km ASC` performs the
+neighbor expansion internally — it decomposes the circle into the minimal
+covering set of geohash ranges (center + neighbors at the right precision),
+scans those score ranges, then computes true distance per candidate, filters,
+and sorts. The boundary problem is solved below our API line — but it is the
+mechanism an interviewer wants explained, because "the library handles it" is
+the answer that gets graded down.
+
+```mermaid
+flowchart LR
+    Q[Radius query<br/>pickup + 5 km] --> PR[Pick cell precision<br/>cell edge ≥ radius]
+    PR --> NB[Center cell<br/>+ 8 neighbors]
+    NB --> RS[Scan 9 geohash<br/>score ranges in the ZSET]
+    RS --> HF[Exact haversine filter<br/>drop &gt; 5 km]
+    HF --> ASC[Sort nearest-first<br/>take 10]
+```
+
+**Decision:** Redis GEOSEARCH (geohash-scored ZSET + internal 9-cell expansion
++ exact-distance filter). The lab fake deliberately skips cells and computes
+haversine over all drivers — semantically identical, which is itself the
+point: cells are a scaling optimization, never the correctness boundary.
+
+**In the code:** `src/location/redis-geo-client.ts` (GEOSEARCH BYRADIUS — the
+adapter never touches raw geohash prefixes), `src/location/geo-client.fake.ts`
+(pure-haversine fake pinning the same semantics),
+`src/matching/candidates.test.ts` (nearest-first ordering across the bbox).
+
+### 9.8 How does an unanswered offer expire so the driver becomes available again?
+
+**The question behind the question:** a timeout must unwind state held in
+three places (workflow, ride record, driver lock + offer row) — whose clock do
+you trust when any process can die?
+
+**Janitor cron:** scan for offers older than 10 s and reset them. Works until
+the cron is down (nobody unlocks), double-fires (races the accept), or drifts
+(unlock latency = scan interval). The cron becomes a correctness component —
+the same hole 9.2 rejected.
+
+**What we run — three timers, distinct owners, one release path:**
+1. **Engine-owned:** the `OfferToDriver` state waits for the task token with
+   `TimeoutSeconds: 10`. No answer ⇒ the engine fails the state
+   (`States.Timeout`) and the catch routes to ReleaseOffer. This clock
+   survives every Lambda crash because it lives in the workflow engine.
+2. **The unwind (ReleaseOffer):** guarded write flips `OFFERED→MATCHING`
+   *pinned to driverId AND attempt* — a delayed release can never clobber a
+   re-offer; conditional delete of the offer row *pinned to rideId* — never
+   removes a newer offer; owner-checked lock release. Driver joins `excluded`,
+   the loop re-searches. Decline and lock-busy ride the exact same path — one
+   lane, three triggers, every rung idempotent.
+3. **Store-owned backstops (workflow itself dies):** the lock self-expires
+   (`PX 10000`), the offer row TTLs out of DynamoDB, and `markFailed` covers
+   OFFERED so the ride still reaches a terminal state — a late accept then
+   gets a clean `STALE_OFFER` 409 from the owner guard.
+
+```mermaid
+flowchart LR
+    OFF[Offer to driver D<br/>token armed · 10 s] -->|no answer| TO[States.Timeout<br/>engine clock fires]
+    TO --> REL[ReleaseOffer]
+    REL -->|OFFERED to MATCHING<br/>pinned driver + attempt| RIDES[(rides)]
+    REL -->|delete row<br/>pinned rideId| OFFROW[(driver-offers)]
+    REL -->|owner-checked DEL| LOCK[(lock:driver:D)]
+    REL -->|exclude D| NEXT[re-search<br/>next candidate]
+    LOCK -.->|backstop: PX self-expiry| FREE([D available])
+```
+
+**Decision:** engine-owned timeout (Step Functions `waitForTaskToken`) for the
+primary path, store-owned TTLs (Redis `PX`, DynamoDB TTL) as crash backstops,
+and conditional writes so every unwind step is safe to repeat or lose a race.
+
+**In the code:** `cdk/stacks/matching-stack.ts` (`taskTimeout` + catch-all to
+release), `src/matching/release.ts` (the one unwind path),
+`src/matching/driver-lock.ts` (PX TTL + owner-checked Lua release),
+`src/matching/offer-store.ts` (row TTL + rideId-pinned delete),
+`src/rides/store.ts` (`releaseOffer` attempt pin; `markFailed` covering
+OFFERED).

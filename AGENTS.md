@@ -100,8 +100,11 @@ how to roll back.
 
 ### 9. Deep Dives — format
 
-This section is the reason the repo exists. Each deep dive interrogates one
-architectural decision in the format used by strong system design interviews:
+This section is the reason the repo exists. Each deep dive poses one
+operational problem or architectural decision **as the interviewer's
+question** — mechanism questions ("How do we guarantee each driver holds at
+most one offer at a time?") and decision questions ("Why SQS between A and B,
+not a direct call?") both belong; a strong section mixes them:
 
 ```markdown
 ### Deep Dive: Why SQS between A and B, not a direct call?
@@ -125,6 +128,14 @@ latency cost that no requirement actually demands.
 Rules for deep dives:
 - Always name the losing option and what it would have bought us.
 - Quantify whenever possible (back-of-envelope math beats adjectives).
+- Answer the How, not only the Why: after the decision, walk the chosen
+  mechanism step by step (the race unfolding, the timeout firing, the boundary
+  case being handled) — "the library handles it" is the answer that gets
+  graded down.
+- Name the specific technology in the **Decision** line (Redis GEOSEARCH, SQS
+  + DLQ, Step Functions `waitForTaskToken`), not a category.
+- Include a small zoomed Mermaid slice of the architecture when it teaches the
+  mechanism; skip it when it would be decoration.
 - Every deep dive **must** end with `In the code:` pointing at the files where the
   decision is implemented. If it isn't implemented, it isn't a deep dive yet — put
   it in `tasks.md`.

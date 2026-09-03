@@ -333,8 +333,8 @@ code via env — no constant duplicated in source.
 |---|---|---|
 | 1 scaffold | §6 | §4 |
 | 2 data stores | §3 | §5, DD 9.5 |
-| 3 location path | §1, §4 | §6.3, DD 9.1/9.6 |
-| 4 matching path | §4, §5 | §6.2/§6.4, DD 9.2/9.3/9.4 |
+| 3 location path | §1, §4 | §6.3, DD 9.1/9.6/9.7 |
+| 4 matching path | §4, §5 | §6.2/§6.4, DD 9.2/9.3/9.4/9.8 |
 | 5 fares | §1, §2 | §6.1 |
 | 6 test data | §8 fixtures | §2.2 |
 | 7 go live | §6, §8 smoke | §4, §8 |
