@@ -143,7 +143,7 @@ DynamoDB, on-demand:
 | Table | PK | SK / notes |
 |---|---|---|
 | `fares` | `fareId` | pickup, destination, price, eta, `expiresAt` (TTL) |
-| `rides` | `rideId` | riderId, fareId, status, driverId?, timestamps; GSI `driverId-status` for "driver's active ride"; GSI `riderId-createdAt` for history |
+| `rides` | `rideId` | riderId, fareId, status, driverId?, attempt, timestamps; GSI `driverId-status` for "driver's active ride"; GSI `riderId-createdAt` for history |
 | `driver-offers` (lab notifier) | `driverId` | rideId, offeredAt, `expiresAt` (TTL) — production replaces this table with push delivery |
 
 Redis:
@@ -594,3 +594,69 @@ release), `src/matching/release.ts` (the one unwind path),
 `src/matching/offer-store.ts` (row TTL + rideId-pinned delete),
 `src/rides/store.ts` (`releaseOffer` attempt pin; `markFailed` covering
 OFFERED).
+
+## 10. Final design — the whiteboard after the deep dives
+
+§4 is the sketch you draw in minute 15. Every deep dive then amended it; this
+is the picture on the whiteboard when the interview ends — same shape, but the
+components carry names, the edges carry guarantees, and the additions the
+dives forced are visible.
+
+```mermaid
+flowchart LR
+    RC[Rider App<br/>poll GET /rides]
+    DC[Driver App<br/>adaptive ping 2–30 s · 9.6]
+    GW[API Gateway<br/>auth + rate limiting]
+    RS[Ride Service]
+    MAPS[Routing Provider]
+    MQ[[SQS match-queue]]
+    DLQ[[DLQ + paging alarm · 9.3]]
+    ORCH[Step Functions per ride · 9.4<br/>offer → wait ≤10 s → release loop]
+    MS[Matcher]
+    LS[Location Service]
+    GEO[(Redis GEO, sharded · 9.1<br/>ts ZSET + 30 s sweeper)]
+    LOCKS[(Redis offer locks<br/>SET NX PX 10 s · 9.2)]
+    DB[(DynamoDB on-demand · 9.5<br/>fares TTL · rides + attempt · offers TTL)]
+    NS[Notifier<br/>APNs/FCM push]
+
+    RC --> GW
+    DC --> GW
+    GW --> RS
+    GW --> LS
+    RS -->|route + price| MAPS
+    RS -->|useFare guard · createRide| DB
+    RS -->|exactly one msg per ride| MQ
+    MQ -->|StartExecution name = rideId<br/>redelivery dedupe · 9.3| ORCH
+    MQ -.->|3 failed receives · 9.3| DLQ
+    LS -->|GEOADD overwrite per ping| GEO
+    ORCH --> MS
+    MS -->|GEOSEARCH 5 km ASC<br/>9-cell boundary expansion · 9.7| GEO
+    MS -->|acquire, owner-checked release| LOCKS
+    MS -->|markOffered guard, attempt++ · 9.2| DB
+    MS --> NS
+    NS -.offer, 10 s window.-> DC
+    DC -->|accept: acceptRide owner guard first,<br/>THEN resolve task token · 9.8| RS
+    RS -->|SendTaskSuccess / SendTaskFailure| ORCH
+    ORCH -->|timeout · decline: release pinned<br/>to driver + attempt · 9.8| DB
+```
+
+What changed since §4, dive by dive:
+
+- **Added components:** the DLQ with its paging alarm (9.3) — poison requests
+  are isolated, never silently lost; nothing else needed inventing, which is
+  itself the finding: the dives hardened edges rather than adding boxes.
+- **Data-model changes:** `rides` gains `attempt` — the release guard is
+  pinned to driver AND attempt so a delayed release can never clobber a
+  re-offer (9.2, 9.8); the offer record's TTL equals the offer window (9.8);
+  every state transition became a *named* conditional write (`useFare`,
+  `markOffered`, `acceptRide` with owner condition, `releaseOffer`,
+  `markFailed` covering OFFERED so every ride reaches a terminal state).
+- **Edges that gained guarantees:** queue→workflow carries execution-name
+  dedupe (9.3); the geo search explicitly does 9-cell boundary expansion +
+  exact-distance filtering (9.7); accept resolves the task token only after
+  the owner guard succeeds (9.8); the driver app owns its ping cadence and
+  the server treats it as untrusted input (9.6).
+- **Deliberately unchanged:** SQS, Step Functions, DynamoDB, and Redis GEO all
+  survived interrogation (9.1, 9.3, 9.4, 9.5) — the dives confirmed the §4
+  choices rather than replacing them, with Kafka named as the at-scale swap
+  for the queue.

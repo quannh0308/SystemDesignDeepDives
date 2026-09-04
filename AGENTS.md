@@ -95,7 +95,13 @@ why the winner won. No strawmen.
 What happens when each dependency is down. Metrics that matter, alarms, and
 how to roll back.
 
-## 9. Deep Dives  ← the signature section, always last
+## 9. Deep Dives  ← the signature section
+
+## 10. Final design  ← the whiteboard after the dives: one diagram with named
+technology, every dive's refinement applied (annotate nodes/edges with dive
+numbers), closed by a short "what changed since §4" list — added components,
+data-model changes, edges that gained guarantees, and what deliberately
+survived interrogation
 ```
 
 ### 9. Deep Dives — format
