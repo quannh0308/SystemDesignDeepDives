@@ -246,8 +246,11 @@ Single logical DB, keys namespaced:
 Client: `ioredis` behind a minimal seam (`GeoClient` / `LockClient` interfaces
 in `src/matching/driver-lock.ts` and the location/candidates modules) — CORE
 logic unit-tests against in-memory fakes of the seam; the real ioredis adapter
-is exercised from task 7 onward. 2 s command timeout, zero retries on lock
-acquire — a timeout counts as "driver busy, next candidate". Fail toward
+is exercised from task 7 onward. Cell-boundary correctness lives inside
+`GEOSEARCH` (neighbor expansion + exact-distance filter, hld.md Deep Dive 9.7):
+the adapter never hand-rolls geohash prefix queries, and the smoke suite's
+boundary-pair probe is the live receipt. 2 s command timeout, zero retries on
+lock acquire — a timeout counts as "driver busy, next candidate". Fail toward
 liveness; correctness stays guarded by the conditional writes.
 
 ## 5. Match orchestration (Step Functions, standard workflow)
@@ -322,7 +325,7 @@ code via env — no constant duplicated in source.
 ## 8. Test architecture (tasks 6–10)
 
 - **Fixtures** (`fixtures/*.json`): `{version, seed, profile, placement, city, drivers[{id, start, profile:{acceptP, thinkMs, cadenceS, shiftMin}}], demand[{atMs, pickup, dest}]}` — `atMs` are offsets from run start so a fixture replays at any wall-clock time; same flags ⇒ byte-identical file; regenerated from the seed (`npm run gen`), never committed.
-- **Smoke** (`npm run smoke`): the 4 checks of tasks 7.2 against §2 endpoints, <60 s total, non-zero exit gates the LIVE gate.
+- **Smoke** (`npm run smoke`): the 5 checks of tasks 7.2 against §2 endpoints (incl. the geohash boundary-pair probe — Deep Dive 9.7's live receipt), <60 s total, non-zero exit gates the LIVE gate.
 - **E2E** (`npm run e2e`): vitest; each spec = fixture world + scenario + **invariant audit**. The auditor pulls all `rides` rows for the spec's `runId` plus the offer-audit trail and asserts: per driver, offer intervals never overlap; per ride, at most one driverId ever ACCEPTED; every ride terminal.
 - **Load** (`npm run load -- --scenario firehose|burst|soak`): worker pool, per-request latency records → p50/p95/p99 summary; the burst scenario ends with the same invariant audit over the whole run.
 - **Drills** (task 10): fault injection via `CHAOS=kill-after-lock` env flag on the offer step + scripted ElastiCache reboot; evidence = timestamped CloudWatch snapshots into `ledger.md`.

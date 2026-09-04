@@ -58,7 +58,7 @@ Checkbox state is the source of truth; update in the same commit as the work.
 
 - [ ] 7. Go live — deploy and prove the system breathes
   - [ ] 7.1 `cdk bootstrap` (once) + `cdk deploy --all` to the lab account; stack outputs (API URL, table/queue names) written to `deploy/outputs.json` — the single config source for every test task below
-  - [ ] 7.2 Smoke suite `npm run smoke`: one driver ping lands in GEO index, one fare priced, one ride matched end-to-end to ACCEPTED, sweeper evicts a silent driver — each check <60 s, exits non-zero on any failure
+  - [ ] 7.2 Smoke suite `npm run smoke`: one driver ping lands in GEO index, one fare priced, one ride matched end-to-end to ACCEPTED, sweeper evicts a silent driver, and a boundary pair — two drivers ~200 m apart straddling a geohash cell edge — both found by one radius search (the Deep Dive 9.7 receipt: the unit fake is cell-less, only real Redis can prove this) — each check <60 s, exits non-zero on any failure
   - [ ] 7.3 Observability live: CloudWatch dashboard (match latency, queue depth/age, lock contention, stale-driver ratio) + the two paging alarms from design §8
   - [ ] 7.4 Record deploy evidence (stack ARNs, smoke output) in ledger — LIVE gate passed, testing phases unlocked
   - _Design: §4, §8_
