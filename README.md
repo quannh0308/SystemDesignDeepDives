@@ -34,6 +34,13 @@ Each design directory is self-contained: start at its `README.md`, read `docs/hl
 | System | Status | One-liner |
 |---|---|---|
 | [uber-like-rides](./uber-like-rides/) | 🚧 Built (6/11 groups) — go-live next | Ride-hailing marketplace: geo matching under a 2M-writes/s location firehose, one-offer-one-driver consistency, burst-proof request queueing |
+| [payment-system](./payment-system/) | 📐 Designing | Stripe-style charges on a Revolut-style double-entry ledger: exactly-once money movement over a flaky card network, provable balances, settlement reconciliation |
+
+Queued (research banked in [BACKLOG.md](./BACKLOG.md)): **retail-brokerage**
+(Trade Republic/Robinhood — live-price fan-out, buying-power holds, async
+fills; inherits crypto order routing as a deep dive) · **matching-engine**
+(the exchange itself — single-writer order book, event sourcing, deterministic
+replay).
 
 ## Conventions
 
