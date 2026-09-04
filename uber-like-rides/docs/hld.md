@@ -663,8 +663,9 @@ What changed since §4, dive by dive:
 
 ### One ride, start to finish
 
-The same design, narrated — rider C requests, driver D1 ignores the offer,
-driver D2 accepts, the ride runs and finishes:
+The same design, narrated — rider C requests; driver D1 ignores the offer;
+the matcher crashes mid-offer to D2, leaving dangling state that heals itself;
+driver D3 accepts; the ride runs and finishes:
 
 1. **C asks for a price.** The app sends pickup and destination; the Ride
    Service asks the routing provider for distance and time, prices it, and
@@ -681,8 +682,8 @@ driver D2 accepts, the ride runs and finishes:
    counting.
 4. **The workflow looks for drivers.** It marks the ride `MATCHING` and runs
    `GEOSEARCH` around the pickup — 5 km, nearest first, neighboring geohash
-   cells included (9.1, 9.7). Say it finds D1 at 400 m and D2 at 1.2 km;
-   drivers already on a ride are filtered out.
+   cells included (9.1, 9.7). Say it finds D1 at 400 m, D2 at 900 m and D3 at
+   1.2 km; drivers already on a ride are filtered out.
 5. **Offer to D1.** The workflow takes D1's lock (`SET NX`, 10 s TTL — no
    other ride can offer to D1 now, 9.2), flips the ride to `OFFERED`
    (attempt 1) with a conditional write, stores the offer with the workflow's
@@ -693,30 +694,53 @@ driver D2 accepts, the ride runs and finishes:
    release path unwinds in order: ride back to `MATCHING` (pinned to D1 and
    attempt 1, so it can never clobber a later offer), offer record deleted,
    lock released, D1 added to the excluded list. C's app still shows
-   "finding your driver".
+   "finding your driver". From D1's side the story is symmetric: the moment
+   the release runs — or at worst when the lock's own 10-second TTL expires —
+   D1 is available to every other ride in the city again (9.2). A driver who
+   ignores an offer is never wrongly busy for longer than the offer window
+   itself.
 7. **Next candidate.** The loop searches again (budget checked against the
-   deadline), skips D1, and offers to D2 the same way: lock, `OFFERED`
-   attempt 2, offer record with a fresh token, push.
-8. **D2 taps Accept inside the window.** The request lands on the Ride
-   Service: D2's offer record must match this ride (anything else is a 409
-   stale offer), then the `acceptRide` owner guard flips
-   `OFFERED→ACCEPTED` only if the ride is still offered to exactly D2 — the
-   record, not the lock or the workflow, is the arbiter (9.2). Only after
-   that write succeeds is the task token resolved (9.8). The workflow ends
-   Matched; C's poll flips to `ACCEPTED` with D2's details.
-9. **D2 drives to C.** D2's phone keeps pinging location on its own cadence,
-   faster now that it is heading to a pickup (9.6), so C watches the car
-   approach. D2's leftover lock just expires; the active-ride filter keeps D2
-   out of every other search regardless.
-10. **Pickup.** C gets in, D2 taps Start: `ACCEPTED→IN_PROGRESS`, one more
-    guarded write pinned to D2. No orchestration is involved anymore —
+   deadline), skips D1, and offers to D2 the same way: lock D2, `OFFERED`
+   attempt 2, offer record with a fresh token, push to D2's phone.
+8. **The matcher crashes mid-offer to D2.** Right after taking D2's lock and
+   flipping the ride to `OFFERED` — before D2 can answer — the matcher
+   process dies. Freeze the frame: D2's phone shows an offer whose callback
+   token nobody is waiting on, D2's lock is held, the ride record says
+   `OFFERED` attempt 2. This is exactly the dangling state that would need a
+   janitor cron in the status-column design (9.2) — and here nobody has to
+   clean it up, because the cleanup is built in. The workflow engine sees its
+   offer state fail and routes to the *same release path a timeout uses*:
+   ride back to `MATCHING` pinned to D2 + attempt 2, offer record deleted,
+   lock released, D2 excluded (9.8). Had the workflow itself died along with
+   the matcher, the store-owned clocks finish the job instead: D2's lock
+   self-expires at 10 seconds, the offer record TTLs out of DynamoDB, and the
+   `markFailed` guard — which deliberately covers `OFFERED` — drives the ride
+   terminal rather than leaving it in limbo. If D2 taps the stale offer a
+   minute later, the owner guard answers with a clean 409: no ghost
+   assignment, and D2 is long since available again.
+9. **Third candidate.** The loop runs once more: D1 and D2 excluded, D3 is
+   next — lock, `OFFERED` attempt 3, fresh token, push.
+10. **D3 taps Accept inside the window.** The request lands on the Ride
+    Service: D3's offer record must match this ride (anything else is a 409
+    stale offer), then the `acceptRide` owner guard flips
+    `OFFERED→ACCEPTED` only if the ride is still offered to exactly D3 — the
+    record, not the lock or the workflow, is the arbiter (9.2). Only after
+    that write succeeds is the task token resolved (9.8). The workflow ends
+    Matched; C's poll flips to `ACCEPTED` with D3's details.
+11. **D3 drives to C.** D3's phone keeps pinging location on its own cadence,
+    faster now that it is heading to a pickup (9.6), so C watches the car
+    approach. D3's leftover lock just expires; the active-ride filter keeps
+    D3 out of every other search regardless.
+12. **Pickup.** C gets in, D3 taps Start: `ACCEPTED→IN_PROGRESS`, one more
+    guarded write pinned to D3. No orchestration is involved anymore —
     matching is over, and from here the ride record is a state machine walked
     by ordinary conditional writes.
-11. **Finish.** At the destination D2 taps Finish: `IN_PROGRESS→COMPLETED`,
+13. **Finish.** At the destination D3 taps Finish: `IN_PROGRESS→COMPLETED`,
     terminal. Payment and receipts hang off this transition and are out of
     scope for this design (§2.3).
-12. **And if anything had crashed along the way** — a matcher, the workflow,
-    even Redis — the self-healing clocks (workflow timeout, lock TTL, offer
-    TTL) plus the `markFailed` guard guarantee the ride still ends in a
-    terminal state, never in limbo (9.8). C is either matched or cleanly told
-    to try again; no driver stays wrongly busy for more than 10 seconds.
+14. **The invariant underneath all of it** — demonstrated live at steps 6 and
+    8: every actor in this story can die at any line above, and the
+    self-healing clocks (workflow timeout, lock TTL, offer TTL) plus the
+    guard chain still land the system in a legal state. C is either matched
+    or cleanly told to try again; no driver stays wrongly busy for more than
+    10 seconds; no ride ends anywhere but a terminal status (9.8).
