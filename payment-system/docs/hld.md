@@ -585,3 +585,153 @@ design, and pretending otherwise would be lab theater.
 **In the code (planned):** `src/network/card-network-port.ts` (token-typed —
 no PAN-shaped field exists), `cdk/stacks/api-stack.ts` (secrets wiring),
 `src/sim/vault.ts` (token stub).
+
+## 10. Final design — the whiteboard after the deep dives
+
+§4 is the sketch you draw in minute 15. Every deep dive then amended it; this
+is the picture on the whiteboard when the interview ends — same shape, but the
+components carry names, the edges carry guarantees, and the additions the
+dives forced are visible.
+
+```mermaid
+flowchart LR
+    V[Token vault<br/>external · PANs never<br/>enter our system · 9.8]
+    M[Merchant server<br/>Idempotency-Key on POST ·<br/>eventId dedupe on webhooks]
+    GW[API Gateway<br/>merchant auth + rate limiting]
+    API[Charge API Lambda<br/>idempotency gate: conditional<br/>PutItem, hash check, replay · 9.1]
+    Q[[SQS intake queue]]
+    DLQ1[[DLQ + paging alarm]]
+    SFN[Step Functions Standard<br/>per charge, name = chargeId · 9.4<br/>authorize → resolve loop → finalize]
+    NET[Card network<br/>external, flaky · charge + status<br/>keyed by OUR ref · 9.2]
+    DB[(DynamoDB on-demand<br/>charges · idempotency · ledger<br/>append-only via IAM deny · 9.3<br/>GSI accountId#s0..15 · 9.7)]
+    CKPT[Checkpointer<br/>ledger stream →<br/>16 balance shards · 9.3]
+    WQ[[SQS webhook queue<br/>delay-tier backoff · 9.5]]
+    WD[Webhook deliverer<br/>HMAC-SHA256 signed,<br/>per-attempt audit · 9.5]
+    DLQ2[[webhook DLQ → merchant-<br/>visible failure state]]
+    S3[(S3 settlement files)]
+    REC[Reconciler<br/>nightly EventBridge rule · 9.6]
+    OPS[Ops lane<br/>drift report + repair queue ·<br/>UNRESOLVED pages · 9.2/9.6]
+
+    V -.->|token to checkout| M
+    M -->|tokens only, never PANs| GW
+    GW --> API
+    API -->|charge PROCESSING +<br/>exactly one message| Q
+    Q -->|StartExecution name = chargeId<br/>redelivery dedupe · 9.4| SFN
+    Q -.->|3 failed receives| DLQ1
+    SFN <-->|every call carries<br/>ref = chargeId · 9.2| NET
+    SFN -->|TransactWriteItems: state flip<br/>+ balanced pair + idem response · 9.3| DB
+    DB -->|stream: terminal<br/>transitions only| WQ
+    WQ --> WD
+    WD -->|signed POST,<br/>backoff to 24 h| M
+    WD -.-> DLQ2
+    DB -->|ledger stream| CKPT
+    NET -.->|daily settlement file| S3
+    S3 -.-> REC
+    DB -.->|ledger lookup by<br/>network ref| REC
+    REC -.-> OPS
+```
+
+What changed since §4, dive by dive:
+
+- **Added components:** the `UNRESOLVED` state with its page (9.2) — ambiguity
+  became a first-class, bounded, alarmed condition instead of a silent guess;
+  the balance checkpointer materialized as its own component (9.3); DLQs with
+  alarms on both queue lanes; the reconciler's repair queue (9.6). Like uber,
+  the dives mostly hardened edges rather than adding boxes.
+- **Data-model changes:** the ledger GSI key became sharded
+  `accountId#s{0..15}` — without it `network:receivable` melts at ~10% of
+  peak, and the *index* would stall the money path itself (9.7); the
+  idempotency record carries the request hash and a response snapshot so
+  replays are byte-identical and key-reuse is detectable (9.1); the ledger
+  table is append-only by IAM deny, not by convention (9.3).
+- **Edges that gained guarantees:** every network call is keyed by *our*
+  reference id, converting retries from dangerous to safe (9.2); the finalize
+  collapsed into one `TransactWriteItems` so state and money can never
+  disagree, even for an instant (9.3); queue→saga carries execution-name
+  dedupe (9.4); webhooks are observed from the store's stream, not sent by
+  the processor — a crash after commit still notifies (9.5); every delivery
+  is HMAC-signed and carries a stable `eventId` for merchant-side dedupe
+  (9.5).
+- **Deliberately unchanged:** SQS, Step Functions, and DynamoDB all survived
+  interrogation (9.3, 9.4, 9.7) — with Postgres recorded as the serious
+  production runner-up for the ledger (9.3) and EventBridge API Destinations
+  as the managed swap for the webhook pipeline (§7).
+
+### One charge, start to finish
+
+The same design, narrated — merchant M charges customer C €20.00; M's client
+retries; the card network goes ambiguous mid-charge; M's webhook endpoint is
+down for a deploy; and three weeks later the settlement file disagrees with
+one charge nobody noticed:
+
+1. **C pays on M's site.** M's checkout exchanges C's card details for a
+   token directly with the vault — the PAN never touches M's backend, and it
+   *cannot* touch ours: no API field exists for it to arrive in (9.8). M's
+   server calls `POST /charges`: 2000 EUR, the token, Idempotency-Key K.
+2. **The gate.** The conditional put of K wins (first writer), the charge row
+   lands as `PROCESSING`, exactly one message is enqueued, and M gets
+   `202 {chargeId}`. From this line down the charge cannot be lost —
+   everything that follows is either progress or repair (§2.2).
+3. **M's client retries.** M's HTTP client had a 2-second timeout; our 202
+   arrived at 2.1 s. M retries with the same key K. The gate's conditional
+   put loses this time, the stored record is read, the request hash matches —
+   M receives the *same* `202 {chargeId}`, byte-identical. One charge exists,
+   not two, and nothing downstream even noticed (9.1). Had the retry carried
+   a *different* amount under key K, it would have gotten a 409 instead of
+   silently executing the wrong request.
+4. **The saga starts — twice.** The queue delivers; the pump starts the Step
+   Functions execution named after the charge id. A minute later the queue
+   redelivers (at-least-once is its contract); the second `StartExecution`
+   bounces off the name. One saga, not two (9.4).
+5. **The network goes ambiguous.** The authorize call — carrying
+   `ref = chargeId` — times out at 10 s. Freeze the frame: did C's card get
+   charged? *We do not know, and both guesses are wrong* (9.2). The saga
+   neither retries blindly nor marks anything failed. It asks `status(ref)`.
+   The network answers `APPROVED` — the original request had landed; only its
+   response was lost in transit. (Had the answer been "never saw that ref",
+   resubmitting the same ref would have been safe — the ref dedupes. Had
+   there been no answer for the loop budget, the charge would have parked
+   `UNRESOLVED` and paged, entering step 9's net.)
+6. **The atomic finalize.** One `TransactWriteItems`: charge
+   `PROCESSING→SUCCEEDED` (conditioned on `PROCESSING` — a lost race aborts
+   everything), DEBIT `network:receivable` shard s7, CREDIT
+   `merchant:M:available`, idempotency record updated with the terminal
+   response. There is no instant — crash where you like — in which the state
+   says one thing and the money says another (9.3). The checkpointer sees
+   the two entries on the stream and advances M's balance within a second;
+   `GET /balance` now shows the 2000 (9.3, 9.7).
+7. **The webhook fights through a deploy.** The stream emits the terminal
+   transition; the deliverer signs `charge.succeeded` (`eventId =
+   chargeId#SUCCEEDED`) and POSTs. M's endpoint is mid-deploy: 503. Retry at
+   1 m — 503 again. Retry at 5 m — 200. Every attempt is an audit row; had
+   the endpoint stayed dark for the full backoff ladder, the delivery would
+   have dead-lettered into a merchant-visible failure state — and M's poll of
+   `GET /charges/{id}` was the truth the whole time; a webhook is a
+   notification, never state transfer (9.5). If a duplicate delivery slips
+   through (at-least-once is the contract), M's uniqueness check on
+   `eventId` drops it — one line of merchant code, documented the way Stripe
+   documents it.
+8. **Three weeks later, the auditor.** Why is M's balance exactly what it is?
+   Replay: the balance is the sum of ledger entries; each entry belongs to a
+   transaction; each transaction balances debit-for-credit; and none of them
+   can have been edited after the fact — the runtime role *lacks the IAM
+   permission* to update or delete ledger rows (9.3). The answer is a
+   derivation from immutable records, not "because the balance column says
+   so".
+9. **The nightly net.** One night, the settlement file carries a row our
+   ledger doesn't: a charge some *other* incident path resolved wrongly
+   weeks ago. The reconciler buckets it in-file-not-in-ledger — the worst
+   class — auto-creates a repair item with the file row attached, and pages
+   (9.6). Internal atomicity (step 6) proves we recorded *our* view
+   correctly; only this diff proves our view matches the *network's* — which
+   is the view that moves real money. The drift SLI is zero unexplained
+   rows, and the lab drills earn that number by injecting exactly this
+   corruption into the simulator's file.
+10. **The invariant underneath all of it** — demonstrated live at steps 3, 4,
+    5, and 9: every actor in this story can retry, crash, or lie by omission
+    at any line above, and the layered mechanisms (idempotency gate, saga
+    name dedupe, reference-id resolution, atomic finalize, signed
+    at-least-once webhooks, nightly reconciliation) still land the system in
+    a state where money moved exactly once, the books balance, and every
+    exception is loud. C was charged €20.00 precisely once; M was credited
+    precisely once; and anyone who doubts it can replay the ledger.
