@@ -213,6 +213,16 @@ export class MatchingStack extends Stack {
       comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
       alarmDescription: 'Poison ride request in the DLQ (hld.md §8, drill 10.3)',
     });
+    new Alarm(this, 'StuckExecutionAlarm', {
+      metric: this.stateMachine.metricTimedOut({ period: Duration.minutes(5) }),
+      threshold: 0,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+      alarmDescription:
+        'An execution hit the 120 s backstop and aborted WITHOUT running MarkFailed — '
+        + 'its ride may rest OFFERED, which also keeps that driver "active" in the candidate '
+        + 'filter. Recovery: invoke the fail step for the rideId (markFailed covers OFFERED).',
+    });
 
     new Dashboard(this, 'MatchingDashboard', {
       widgets: [

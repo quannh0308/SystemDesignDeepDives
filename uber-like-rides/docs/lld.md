@@ -286,11 +286,14 @@ The 60 s budget (design NFR-1) is enforced *inside* the workflow: GetCandidates
 reports no candidates once `deadlineMs` has passed, which routes to the guarded
 `MarkFailed` (a workflow-level timeout cannot be caught in ASL, and an aborted
 execution would leave the ride non-terminal). The state machine's own
-`TimeoutSeconds: 120` is a backstop only. `markFailed` also covers OFFERED so a
-workflow that dies mid-offer still drives the ride terminal — a late accept
-then gets a clean `STALE_OFFER`. Handlers resolve the token only *after* their
-conditional write succeeds — the ride record, not the workflow, is the source
-of truth.
+`TimeoutSeconds: 120` is a backstop only — and because an aborted execution
+runs no states, a timed-out execution **pages** (ExecutionsTimedOut alarm): its
+ride rests at `OFFERED`, which also keeps that driver "active" in the candidate
+filter. Recovery is one invocation of the fail step — `markFailed` deliberately
+covers OFFERED so the operator tool and a racing late accept are both safe: the
+guard arbitrates. A late accept then gets a clean `STALE_OFFER`. Handlers
+resolve the token only *after* their conditional write succeeds — the ride
+record, not the workflow, is the source of truth.
 
 ## 6. CDK stacks and wiring
 

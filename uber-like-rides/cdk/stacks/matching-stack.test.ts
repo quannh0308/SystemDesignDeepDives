@@ -61,8 +61,11 @@ describe('matching-stack (lld.md §5, §6)', () => {
     expect(inVpc.length).toBe(3); // candidates, offer, release
   });
 
-  it('the three paging alarms exist: match p99, oldest message age, DLQ non-empty', () => {
-    synth().resourceCountIs('AWS::CloudWatch::Alarm', 3);
+  it('the four paging alarms exist: match p99, oldest message age, DLQ non-empty, timed-out execution', () => {
+    synth().resourceCountIs('AWS::CloudWatch::Alarm', 4);
+    synth().hasResourceProperties('AWS::CloudWatch::Alarm', {
+      MetricName: 'ExecutionsTimedOut',
+    });
   });
 
   it('exports queue url + state machine arn + audit table for deploy/outputs.json', () => {

@@ -711,13 +711,18 @@ driver D3 accepts; the ride runs and finishes:
    clean it up, because the cleanup is built in. The workflow engine sees its
    offer state fail and routes to the *same release path a timeout uses*:
    ride back to `MATCHING` pinned to D2 + attempt 2, offer record deleted,
-   lock released, D2 excluded (9.8). Had the workflow itself died along with
-   the matcher, the store-owned clocks finish the job instead: D2's lock
-   self-expires at 10 seconds, the offer record TTLs out of DynamoDB, and the
-   `markFailed` guard — which deliberately covers `OFFERED` — drives the ride
-   terminal rather than leaving it in limbo. If D2 taps the stale offer a
-   minute later, the owner guard answers with a clean 409: no ghost
-   assignment, and D2 is long since available again.
+   lock released, D2 excluded (9.8). The workflow itself cannot die with the
+   matcher — durable execution is the point of 9.4 — but if an execution is
+   ever aborted from outside (the 120 s backstop, a manual stop), the
+   store-owned clocks free D2 anyway: the lock self-expires at 10 seconds and
+   the offer record TTLs out of DynamoDB. The one thing an aborted execution
+   leaves behind is a ride resting at `OFFERED` — which is why a timed-out
+   execution pages (§8), and why the `markFailed` guard deliberately covers
+   `OFFERED`: one operator invocation of the fail step drives the ride
+   terminal, and a late accept that raced it gets the guard's verdict either
+   way. If D2 taps the stale offer a minute later, the owner guard answers
+   with a clean 409: no ghost assignment, and D2 is long since available
+   again.
 9. **Third candidate.** The loop runs once more: D1 and D2 excluded, D3 is
    next — lock, `OFFERED` attempt 3, fresh token, push.
 10. **D3 taps Accept inside the window.** The request lands on the Ride
