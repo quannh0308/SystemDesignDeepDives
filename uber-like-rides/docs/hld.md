@@ -660,3 +660,63 @@ What changed since §4, dive by dive:
   survived interrogation (9.1, 9.3, 9.4, 9.5) — the dives confirmed the §4
   choices rather than replacing them, with Kafka named as the at-scale swap
   for the queue.
+
+### One ride, start to finish
+
+The same design, narrated — rider C requests, driver D1 ignores the offer,
+driver D2 accepts, the ride runs and finishes:
+
+1. **C asks for a price.** The app sends pickup and destination; the Ride
+   Service asks the routing provider for distance and time, prices it, and
+   saves a fare that stays valid for 5 minutes. C sees the price.
+2. **C taps Request Ride.** The Ride Service checks the fare belongs to C,
+   then the `useFare` conditional write consumes it — a double-tap or a reused
+   fare gets a clean 409 instead of a second ride. The ride is created as
+   `REQUESTED` (attempt 0) and exactly one message goes onto the SQS queue.
+   C's app gets an immediate 202 and starts polling ride status; nobody waits
+   for matching synchronously (9.3).
+3. **The queue hands the request to matching.** The pump starts one Step
+   Functions execution named after the ride id, so a duplicate delivery
+   cannot start a second matcher (9.3). The 60-second match budget starts
+   counting.
+4. **The workflow looks for drivers.** It marks the ride `MATCHING` and runs
+   `GEOSEARCH` around the pickup — 5 km, nearest first, neighboring geohash
+   cells included (9.1, 9.7). Say it finds D1 at 400 m and D2 at 1.2 km;
+   drivers already on a ride are filtered out.
+5. **Offer to D1.** The workflow takes D1's lock (`SET NX`, 10 s TTL — no
+   other ride can offer to D1 now, 9.2), flips the ride to `OFFERED`
+   (attempt 1) with a conditional write, stores the offer with the workflow's
+   callback token, and pushes it to D1's phone. Then it waits on that token,
+   at most 10 seconds (9.4).
+6. **D1 does nothing.** The timeout fires from the workflow engine's own
+   clock — it works even if every server involved just died (9.8). The
+   release path unwinds in order: ride back to `MATCHING` (pinned to D1 and
+   attempt 1, so it can never clobber a later offer), offer record deleted,
+   lock released, D1 added to the excluded list. C's app still shows
+   "finding your driver".
+7. **Next candidate.** The loop searches again (budget checked against the
+   deadline), skips D1, and offers to D2 the same way: lock, `OFFERED`
+   attempt 2, offer record with a fresh token, push.
+8. **D2 taps Accept inside the window.** The request lands on the Ride
+   Service: D2's offer record must match this ride (anything else is a 409
+   stale offer), then the `acceptRide` owner guard flips
+   `OFFERED→ACCEPTED` only if the ride is still offered to exactly D2 — the
+   record, not the lock or the workflow, is the arbiter (9.2). Only after
+   that write succeeds is the task token resolved (9.8). The workflow ends
+   Matched; C's poll flips to `ACCEPTED` with D2's details.
+9. **D2 drives to C.** D2's phone keeps pinging location on its own cadence,
+   faster now that it is heading to a pickup (9.6), so C watches the car
+   approach. D2's leftover lock just expires; the active-ride filter keeps D2
+   out of every other search regardless.
+10. **Pickup.** C gets in, D2 taps Start: `ACCEPTED→IN_PROGRESS`, one more
+    guarded write pinned to D2. No orchestration is involved anymore —
+    matching is over, and from here the ride record is a state machine walked
+    by ordinary conditional writes.
+11. **Finish.** At the destination D2 taps Finish: `IN_PROGRESS→COMPLETED`,
+    terminal. Payment and receipts hang off this transition and are out of
+    scope for this design (§2.3).
+12. **And if anything had crashed along the way** — a matcher, the workflow,
+    even Redis — the self-healing clocks (workflow timeout, lock TTL, offer
+    TTL) plus the `markFailed` guard guarantee the ride still ends in a
+    terminal state, never in limbo (9.8). C is either matched or cleanly told
+    to try again; no driver stays wrongly busy for more than 10 seconds.

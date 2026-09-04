@@ -99,9 +99,11 @@ how to roll back.
 
 ## 10. Final design  ← the whiteboard after the dives: one diagram with named
 technology, every dive's refinement applied (annotate nodes/edges with dive
-numbers), closed by a short "what changed since §4" list — added components,
-data-model changes, edges that gained guarantees, and what deliberately
-survived interrogation
+numbers), a short "what changed since §4" list — added components, data-model
+changes, edges that gained guarantees, what deliberately survived
+interrogation — and a numbered plain-words walkthrough of one real request
+end to end (happy path plus at least one failure branch), each step naming
+the mechanism that carries it
 ```
 
 ### 9. Deep Dives — format
