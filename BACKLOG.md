@@ -4,6 +4,30 @@ Queued designs with their research seeds — captured at selection time so the
 scoping work isn't lost. Promotion order and scope get re-validated at start
 (per AGENTS.md workflow step 1). Sources are public interview-prep material.
 
+## NEXT UP: p2p-wallet (PayPal / Revolut closed-loop) — promoted 2026-09-06
+
+**One-liner:** customers hold balances *with us*: top-ups from cards, P2P
+transfers between users, wallet-funded merchant payments — the closed-loop
+model where a charge becomes an internal ledger transfer and the card network
+retreats to the wallet's edges.
+
+**Signature interview questions (from the payment-system grill):**
+- How does a wallet debit never overdraw under concurrent spends (the
+  balance-sufficiency conditional write — the one guard class the
+  payment-system ledger never needs)?
+- How do P2P transfers stay exactly-once when *both* sides are our own
+  accounts (internal atomicity replacing 9.2's external ambiguity)?
+- How do top-ups and withdrawals reuse the payment-system boundary machinery
+  (idempotency, ambiguous timeouts, reconciliation) at the wallet edges?
+- What breaks at millions of consumer accounts instead of thousands of
+  merchant accounts (sharding pressure, hot pairs, statement fan-out)?
+
+**Learning delta:** balance-guard conditional writes; internal-transfer
+atomicity at consumer scale; direct stress-test of the payment-system ledger
+(same double-entry, new account class). One honest paragraph on the
+regulatory line (consumer balances = e-money licensing/safeguarding), not
+designed. Origin: payment-system hld §2.3 out-of-scope entry.
+
 ## B. retail-brokerage (Trade Republic / Robinhood shaped)
 
 **One-liner:** retail stock trading: you are the *introducing broker*, not the
@@ -78,7 +102,8 @@ the broker — matching, not accounts") · Coinbase matching-engine prompts
 
 ## Promotion order (working assumption)
 
-payment-system (active) → B retail-brokerage (with C folded in) → D
-matching-engine. scalable-notifications (named at repo creation) is partially
-banked by payment-system's webhook pipeline (hld.md 9.5); re-scope what
-remains before promoting it.
+payment-system (active) → **p2p-wallet** (owner-promoted 2026-09-06) → B
+retail-brokerage (with C folded in) → D matching-engine.
+scalable-notifications (named at repo creation) is partially banked by
+payment-system's webhook pipeline (hld.md 9.5); re-scope what remains before
+promoting it.

@@ -41,6 +41,13 @@ settlement — and paying M's actual bank account (payout) is out of scope
 the merchant's *increase* happens inside our ledger; reconciliation (§9.6)
 exists precisely because those are two independent sets of books.
 
+One more word about "movement": this design moves **claims, not cash**.
+`network:receivable` is a claim we hold against the network;
+`merchant:M:available` is our IOU to M. Real money changes hands exactly once
+— at settlement, when the network pays our settlement bank account.
+Everything else here is bookkeeping about who owes whom, which is also how
+the wider banking system works.
+
 ## 2. Requirements
 
 ### 2.1 Functional requirements
@@ -89,7 +96,15 @@ acting on them is future work) · saved payment methods and the token vault's
 internals (we receive opaque card tokens; PANs never enter the system) ·
 payouts to merchant bank accounts · multi-currency FX · fraud/risk scoring ·
 3-D Secure / SCA challenge flows · subscriptions · processing fees (noted in
-§9.3 as a third balanced ledger leg — the model extends without redesign).
+§9.3 as a third balanced ledger leg — the model extends without redesign) ·
+**customer wallets / P2P (the PayPal–Revolut closed-loop model)** — customers
+holding balances *with us*. That variant turns a wallet-funded charge into a
+purely internal ledger transfer (no card network in the loop), adds the one
+guard class this design never needs (a balance-sufficiency condition on the
+debit, to prevent overdraft under concurrent spends), moves the network to
+the wallet's edges (top-ups, withdrawals), and crosses a regulatory line
+(holding consumer balances = e-money licensing). Deliberately parked as the
+**next design** in this repo — see `BACKLOG.md`.
 
 ## 3. Core entities and APIs
 
