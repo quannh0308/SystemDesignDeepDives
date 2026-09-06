@@ -230,7 +230,12 @@ sequenceDiagram
 ```
 
 A declined charge moves no money, so it writes no ledger entries — the ledger
-records money movements, not attempts. A successful €20.00 charge appends one
+records money movements, not attempts. The attempt itself is still a permanent
+record: the charge row keeps its full lifecycle (`FAILED`, the decline
+`outcome`, timestamps, the network reference) in the `charges` table, which is
+where investigations and decline-rate analytics live (per merchant via the
+`merchantId → createdAt` GSI). Failed charges are absent only from the
+*books*. A successful €20.00 charge appends one
 balanced pair inside the same atomic write that flips the state:
 
 ```
