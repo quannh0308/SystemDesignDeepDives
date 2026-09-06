@@ -74,10 +74,11 @@ payouts to merchant bank accounts · multi-currency FX · fraud/risk scoring ·
 ## 3. Core entities and APIs
 
 **Entities.** `Merchant` (API identity, webhook config) · `Charge` (the unit
-of work: amount, currency, card token, state) · `IdempotencyRecord` (merchant
-+ key → charge + response snapshot) · `LedgerEntry` (one debit or credit; a
-`transactionId` groups a balanced set) · `LedgerAccount` (named balance
-bucket: `merchant:{id}:available`, `network:receivable`) · `BalanceCheckpoint`
+of work: amount, currency, card token, state) · `IdempotencyRecord`
+(merchant + key → charge + response snapshot) · `LedgerEntry` (one debit or
+credit; a `transactionId` groups a balanced set) · `LedgerAccount` (named
+balance bucket: `merchant:{id}:available`, `network:receivable`) ·
+`BalanceCheckpoint`
 (derived, per account shard) · `WebhookEndpoint` / `WebhookDelivery`.
 
 **Charge states:** `PROCESSING → SUCCEEDED | FAILED | UNRESOLVED`.

@@ -48,6 +48,11 @@ other.
 4. Git: agents commit locally and push feature branches (`git push -u origin <branch>`).
    Pushes to `main` are performed by the repo owner. Never force-push.
 5. Update the Designs index table in `README.md` when a design is added or changes status.
+6. Markdown wrap hazard: when hard-wrapping prose, never let a continuation
+   line begin with a list token (`+ `, `- `, `* `, `1. `) or `#` — GitHub
+   parses it as a list/heading and shreds the paragraph. Re-break the line so
+   the token lands mid-line. Lint before commit:
+   `grep -rnE '^([+*] |- [a-z(]|[0-9]+\. [a-z])' --include='*.md' docs/ README.md`
 
 ## hld.md structure
 

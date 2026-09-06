@@ -536,8 +536,9 @@ flowchart LR
     HF --> ASC[Sort nearest-first<br/>take 10]
 ```
 
-**Decision:** Redis GEOSEARCH (geohash-scored ZSET + internal 9-cell expansion
-+ exact-distance filter). The lab fake deliberately skips cells and computes
+**Decision:** Redis GEOSEARCH (geohash-scored ZSET + internal 9-cell
+expansion + exact-distance filter). The lab fake deliberately skips cells and
+computes
 haversine over all drivers — semantically identical, which is itself the
 point: cells are a scaling optimization, never the correctness boundary.
 
