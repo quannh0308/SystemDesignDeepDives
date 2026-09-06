@@ -68,6 +68,11 @@ before the solution.
 ### 1.1 Problem statement
 What's broken or missing, for whom, and why now.
 
+### 1.2 The cast — who's who, who owns what (include when parties could confuse)
+One table: each party, what they own, how they appear in the system; close
+with the end-to-end money/data path in one line. Readers should never have to
+ask "who holds the account here?"
+
 ## 2. Requirements
 ### 2.1 Functional requirements
 Numbered, prioritized ([P1]/[P2]/[P3]). Written as capabilities, not implementations.

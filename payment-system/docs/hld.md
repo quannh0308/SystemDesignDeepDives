@@ -21,6 +21,26 @@ entirely on failure handling: what happens when the network times out, when the
 client retries, when your process crashes between "network said yes" and "we
 recorded it".
 
+### 1.2 The cast — who's who, who owns what
+
+Four parties appear in every flow. Getting their ownership straight up front
+makes the rest of the document read itself:
+
+| Party | Owns | How they appear in this system |
+|---|---|---|
+| **Customer C** | a card account at their **issuing bank** — C's money lives (and decreases) there, *outside our boundary* | only as an opaque `cardToken` on a charge. No account, no login, no balance with us |
+| **Merchant M** | **the account with us**: API key, webhook endpoints, and a ledger balance | our actual customer. `merchant:{id}:available` is the money we owe M |
+| **Us (the processor)** | the ledger (the source of truth for money) and a settlement bank account the network pays into | everything in §4 |
+| **Card network** | the external rails — card scheme + C's issuing bank + our acquiring bank, collapsed into **one box** because our entire interface to it is `charge(ref)`, `status(ref)`, and a nightly settlement file | the counterparty that takes money from C's bank and then owes it to us |
+
+The money path for a successful €20.00 charge, in one line: C's issuer debits
+C (their books, not ours) → the network owes us (`network:receivable`) → we
+owe M (`merchant:M:available`) → real cash lands in our settlement account at
+settlement — and paying M's actual bank account (payout) is out of scope
+(§2.3). So the customer's *decrease* happens inside the card network's world;
+the merchant's *increase* happens inside our ledger; reconciliation (§9.6)
+exists precisely because those are two independent sets of books.
+
 ## 2. Requirements
 
 ### 2.1 Functional requirements
@@ -153,7 +173,10 @@ signed deliveries with backoff and a dead-letter lane (§9.5).
 ledger by network reference id. The independent check that catches everything
 the online path resolved wrongly (§9.6).
 
-**Card network** — external. In the lab it is a simulator behind a port
+**Card network** — the external rails (scheme + issuing bank + acquiring
+bank, one box per §1.2). The customer's debit happens *inside* it, beyond our
+boundary; all we ever receive is the verdict, the settlement money, and the
+settlement file. In the lab it is a simulator behind a port
 (`CardNetworkPort`) with injectable latency, declines, ambiguous timeouts, and
 a settlement-file writer — the same substitution discipline as uber's
 `RoutingPort` (production ↔ lab map lands in lld.md §0).
