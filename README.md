@@ -35,6 +35,7 @@ Each design directory is self-contained: start at its `README.md`, read `docs/hl
 |---|---|---|
 | [uber-like-rides](./uber-like-rides/) | 🚧 Built (6/11 groups) — go-live next | Ride-hailing marketplace: geo matching under a 2M-writes/s location firehose, one-offer-one-driver consistency, burst-proof request queueing |
 | [payment-system](./payment-system/) | 📐 Designing | Stripe-style charges on a Revolut-style double-entry ledger: exactly-once money movement over a flaky card network, provable balances, settlement reconciliation |
+| [flash-sale-inventory](./flash-sale-inventory/) | 📐 Designing | Zero-oversell flash sale under a 100K-buyer stampede: cheapest-first funnel admission, one invariant enforced at two layers (Redis Lua + DB conditional write), reservation lifecycle with deadline release |
 
 Queued (research banked in [BACKLOG.md](./BACKLOG.md)): **p2p-wallet**
 (PayPal/Revolut closed-loop — balance-sufficiency guards, internal transfers;
