@@ -45,8 +45,10 @@ other.
      never deployed
    Toolchain manifests (`package.json`, `tsconfig.json`, `cdk.json`, test/lint
    configs) live at the design root — the tools resolve them there.
-4. Git: agents commit locally and push feature branches (`git push -u origin <branch>`).
-   Pushes to `main` are performed by the repo owner. Never force-push.
+4. Git: work on `main` directly — never create branches. Sync from the remote
+   before starting (`git pull --ff-only`), commit locally on `main` at each
+   milestone. Pushes are performed by the repo owner (`git push origin main`).
+   Never force-push.
 5. Update the Designs index table in `README.md` when a design is added or changes status.
 6. Markdown wrap hazard: when hard-wrapping prose, never let a continuation
    line begin with a list token (`+ `, `- `, `* `, `1. `) or `#` — GitHub
