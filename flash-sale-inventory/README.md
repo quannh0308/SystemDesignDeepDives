@@ -6,19 +6,20 @@ database — ≥99% rejected as cheaply as possible, one invariant (stock never
 below zero) enforced at two layers: a Redis Lua admission script for speed,
 a DB conditional write for truth.
 
-**Status: 📐 Designing** — HLD §1–§8 authored, under owner review; §9 deep
-dives + §10 final design land next. LLD, task plan, and code follow the
-[repo workflow](../AGENTS.md).
+**Status: 📐 Designing** — HLD complete (§1–§10), under owner grill. LLD,
+task plan, and code follow the [repo workflow](../AGENTS.md).
 
 ## Reading order
 
 1. [`docs/hld.md`](./docs/hld.md) — the design at interview altitude. §9
-   Deep Dives (the signature section) arrives at the next checkpoint: eleven
-   interviewer-question dives already wired from §1–§8 (the decrement point,
-   invariant-enforced-twice, the distributed-lock rejection, the admission
-   multiplier, Redis-says-yes-DB-says-no, the deadline race, crash recovery,
-   hot-row relief, sold-out staleness, fairness, and what actually runs in
-   the gateway Lua).
+   Deep Dives is the signature section: eleven interviewer-question dives
+   (the decrement point, invariant-enforced-twice, the distributed-lock
+   rejection, the admission multiplier and its waiting lane,
+   Redis-says-yes-DB-says-no, the deadline race, crash recovery, hot-row
+   relief, sold-out staleness, fairness, and what actually runs in the
+   gateway Lua). §10 closes with the final whiteboard and "One buy attempt,
+   start to finish" — eleven narrated steps including the mid-sale Redis
+   failover.
 2. `docs/lld.md` — the buildable truth (production→lab substitution map:
    what stands in for Redis, the MQ, and the relational DB, argued per the
    repo's CORE/SUPPORTING/HARNESS tiers). *Arrives after the dives.*
