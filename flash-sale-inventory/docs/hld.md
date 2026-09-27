@@ -2,7 +2,8 @@
 
 _This document is the design at production scale (interview altitude). The
 buildable specification of the lab system — contracts, schemas, wiring — lives
-in [lld.md](./lld.md), which arrives after §9–§10._
+in [lld.md](./lld.md), which arrives after the deep dives (§9) and the final
+design (§10)._
 
 ## 1. Overview
 
@@ -30,7 +31,7 @@ the whole system into a funnel or tries to buy a faster database.
 | Party | Owns | How they appear in this system |
 |---|---|---|
 | **Buyer B** | a session token and one attempt per sale | an authenticated click; no cart, no browsing state on the hot path |
-| **Us (the platform)** | the sale config, the admission counters, the reservation state machine, and the **stock truth** (a DB row) | everything in §4 |
+| **Us (the platform)** | the sale config, the admission counters, the reservation state machine, and the **stock truth** (a DB row) | everything in the high-level design (§4) |
 | **Payment provider** | the **money truth**, *outside our boundary* | we hand it a reservation and a deadline; it hands back exactly one signal — `PAID` or `FAILED` — which we consume idempotently |
 
 The path in one line: B's click → our admission (memory-speed pre-count) →
@@ -56,8 +57,8 @@ leaves our DB; money truth never enters it.
    returns stock.
 5. **[P2] Order observation.** A buyer can poll their attempt/order state;
    terminal transitions are observable.
-6. **[P2] Continuous audit.** A ledger audit proves FR-2 continuously and on
-   demand — the invariant is *checked*, not assumed.
+6. **[P2] Continuous audit.** A ledger audit proves the zero-oversell invariant
+   (requirement 2 above) continuously and on demand — the invariant is *checked*, not assumed.
 
 ### 2.2 Non-functional requirements
 
@@ -66,8 +67,8 @@ leaves our DB; money truth never enters it.
   as cheaply as possible. Page/asset traffic is another 10–50× the attempt
   traffic → static sale page via CDN, zero dynamic calls for browsing.
 - **The funnel arithmetic:** admission passes `M × S` into the buy path
-  (M = admission multiplier, default 4, range 3–5 — a named business dial,
-  §9.4): 4,000 of 100,000 ≈ 4%. The other ~96% get a cached sold-out.
+  (M = admission multiplier, default 4, range 3–5 — a named business dial, argued
+  in the admission-multiplier dive, §9.4): 4,000 of 100,000 ≈ 4%. The other ~96% get a cached sold-out.
   Downstream sees ~4K order writes drained over ~10 s ≈ **a few hundred
   writes/s at the database — the stampede never reaches it**.
 - **The hot-row ceiling (why memory speed):** one relational row sustains
@@ -75,14 +76,15 @@ leaves our DB; money truth never enters it.
   serializer. One Redis shard runs the admission script in <1 ms at ~10⁵
   ops/s — one hot sale ≈ one shard's capacity, which is exactly why the
   gateway must shave load *before* Redis and why hot-SKU relief has an
-  escalation path (§9.8).
+  escalation path (the shard-saturation dive, §9.8).
 - **The attempt-surface budget (why the layers hold):** each gateway node's
   local token bucket caps what escapes it — 20 nodes × 1,000/s = a 20K/s
   fleet ceiling on the worst second. Signature rejects are CPU-only. The
   exact rate-limit `INCR`s spread across the cluster by buyer key; only the
   admission `EVAL`s concentrate on the sale's shard: ≤ 20K/s against ~10⁵
   ops/s capacity ≈ **5× headroom on the hottest second**, before the
-  sold-out flag removes the crowd from Redis entirely (§6.1, §6.4).
+  sold-out flag removes the crowd from Redis entirely (the admission script
+  flips the flag, §6.1; the flip-back rules are in §6.4).
 - **Latency:** sold-out p99 < 50 ms (edge/cache) · attempt ack p99 < 200 ms ·
   reservation visible p99 < 2 s (async) · payment window 10 min.
 - **Availability, asymmetric:** the reject path survives everything (static
@@ -91,19 +93,20 @@ leaves our DB; money truth never enters it.
   failure mode may oversell.
 - **Durability, asymmetric:** a `RESERVED` order survives any crash (it is in
   the DB). Admission state in Redis is deliberately *not* durable — it is
-  rebuildable from the DB, conservatively (§9.7).
+  rebuildable from the DB, conservatively (the Redis-restart recovery dive,
+  §9.7).
 - **Storage:** ~4K orders × ~0.5 KB ≈ 2 MB per sale. Storage is a non-problem
   in this design; noted and moved past.
 - **Fairness:** bounded unfairness — roughly arrival order per gateway node,
-  no global FIFO (§9.10).
+  no global FIFO (the fairness dive, §9.10).
 
 ### 2.3 Out of scope
 
 Payment processing internals (we consume `PAID`/`FAILED` signals; the
 `payment-system` design in this repo owns that territory) · multi-SKU shard
 placement (all keys are per-sale, so N concurrent sales are N independent
-funnels; the hot-SKU escalation is §9.8) · bot and fraud scoring beyond rate
-limiting · lottery-style fairness (§9.10 names the pivot; same architecture,
+funnels; the hot-SKU escalation is the shard-saturation dive, §9.8) · bot and fraud scoring beyond rate
+limiting · lottery-style fairness (the fairness dive, §9.10, names the pivot; same architecture,
 different picker) · restock events and multi-round sales · catalog, carts,
 checkout UX (a flash sale is buy-now, quantity 1) · queue-position waiting
 pages.
@@ -119,14 +122,15 @@ deadline and a stored outcome for idempotent replay) · `StockRow` (DB:
 `ReleaseTimer` (one delay message per reservation, fires at the deadline).
 
 **Order states:** every transition is a conditional update on the current
-state (CAS), so each applies at most once and late messages no-op (§9.6):
+state (CAS), so each applies at most once and late messages no-op (the deadline-race
+dive, §9.6):
 
 ```mermaid
 stateDiagram-v2
     direction LR
     [*] --> PENDING: admitted (Redis slot held,<br/>queue message in flight)
     PENDING --> RESERVED: order txn commits<br/>(DB decrement + insert)
-    PENDING --> FAILED_LATE: drain deadline passes<br/>with no stock (bounded tail, §9.4)
+    PENDING --> FAILED_LATE: drain deadline passes<br/>with no stock (bounded tail,<br/>admission-multiplier dive 9.4)
     RESERVED --> CONFIRMED: PAID signal<br/>(CAS on RESERVED)
     RESERVED --> RELEASED: deadline fires or FAILED<br/>(CAS on RESERVED)
     CONFIRMED --> [*]
@@ -138,25 +142,27 @@ stateDiagram-v2
 condition, and it has two flavors: *in transit* (the second or two before the
 consumer processes the message) and *waiting* (stock exhausted right now; the
 message circulates on a delay, ready to claim the next released unit —
-§6.2, §9.4). `FAILED_LATE` is terminal and bounded by construction: it is
+order-creation step 5 in §6.2; the arithmetic is the admission-multiplier
+dive, §9.4). `FAILED_LATE` is terminal and bounded by construction: it is
 the admitted tail that never caught a released unit by the sale's drain
-deadline — the deliberate price of the admission multiplier (§9.4, §9.5).
+deadline — the deliberate price of the admission multiplier (its dive, §9.4; why the
+invariant survives it, the Redis-yes-DB-no dive, §9.5).
 
 **API** (buyer-authenticated with a signed session token, verified locally at
-the gateway — no identity-service call on the hot path, §9.11):
+the gateway — no identity-service call on the hot path — the gateway dive, §9.11):
 
 ```
 POST /v1/sales/{saleId}/attempts                            (buyer)
   → 202 {status:"ADMITTED"}               admitted into the buy path
   → 200 {status:"SOLD_OUT"}               O(1), cache/edge-served
-  → 200 {status:"ALREADY_ATTEMPTED"}      one claim per buyer (§9.11)
+  → 200 {status:"ALREADY_ATTEMPTED"}      one claim per buyer (gateway dive §9.11)
   → 429                                   rate-limited (edge/local)
 
 GET  /v1/sales/{saleId}/orders/me                           (buyer, polling)
   → {orderId?, state: PENDING|RESERVED|CONFIRMED|RELEASED|FAILED_LATE, payBy?}
 
 POST /internal/payment-events           (payment provider, signed webhook)
-  {orderId, outcome: PAID|FAILED, providerRef}    idempotent (§9.6)
+  {orderId, outcome: PAID|FAILED, providerRef}    idempotent (deadline-race dive §9.6)
 ```
 
 Identity always comes from the auth token, never the body — a buyer id in the
@@ -193,85 +199,94 @@ flowchart LR
 cheapest-first: the cached sold-out flag (memory read — once the sale
 exhausts, ~100% of traffic dies here for free), a token bucket in each
 node's memory (approximate is fine — N nodes × limit is still a fleet
-ceiling, §2.2), then local signature verification of the session token —
+ceiling — the attempt-surface budget, §2.2), then local signature verification of the session token —
 a CPU-only check; an identity-service lookup per attempt at 100K/s would
 melt the identity service, so only unknown/expired tokens pay a real
 lookup. Survivors make exactly one network hop, to admission. Ordering
-argument and details in §9.11.
+argument and details in the gateway dive, §9.11.
 
-**Admission** — one Lua script (§6.1, full listing) against three hash-tagged
+**Admission** — one Lua script (full listing in the admission path, §6.1) against three hash-tagged
 per-sale keys: reject on the flag, reject at counter zero (flipping the flag
 atomically), reject repeat claimants, else claim + decrement — one atomic
 unit. Single-threaded execution makes the script a natural per-sale
 serializer at memory speed: ~10⁵ scripts/s on one shard vs ≤ 20K/s arriving
-after the gateway shave (§9.1, §9.11). It says yes at most `M × S` times;
+after the gateway shave (the decrement-point dive, §9.1, and the gateway
+dive, §9.11). It says yes at most `M × S` times;
 every yes is a *provisional* slot, not the truth.
 
 **Sold-out cache** — the answer for the ~96%: the per-sale flag the script
 flips at zero, cached in every gateway (~1 s refresh) and pushed to the edge,
-served in O(1). Flip-back on release (§6.4). Seconds of staleness, always in
-the safe direction (§9.9).
+served in O(1). Flip-back on release follows the waiters-first rule (§6.4).
+Seconds of staleness, always in the safe direction (the sold-out-staleness
+dive, §9.9).
 
 **Order queue** — decouples admission (spiky: 4K admits inside a second) from
 order creation (steady drain at the DB's comfortable few hundred writes/s ≈
 10 s to clear the whole burst). At-least-once delivery is safe because the
-consumer is idempotent on (saleId, buyerId) — the §6.2 crash matrix; bursts
+consumer is idempotent on (saleId, buyerId) — the crash matrix in the order-creation
+contract, §6.2; bursts
 are absorbed and nothing re-enters the attempt path. DLQ isolates poison
 items, alarmed.
 
 **Order service** — the queue consumer, the only writer on the truth. One
 transaction: the conditional stock decrement (`… WHERE remaining > 0`) plus
 the `RESERVED` order insert under the unique constraint; then it schedules
-the payment deadline. Contract and crash matrix in §6.2. If the conditional
+the payment deadline. Contract and crash matrix in the order-creation
+section, §6.2. If the conditional
 write refuses — no stock *right now* — the admitted buyer waits in line: the
 message requeues on a short delay until a release frees a unit or the drain
-deadline turns it into `FAILED_LATE` (§6.2, §9.4).
+deadline turns it into `FAILED_LATE` (order-creation step 5, §6.2; the
+arithmetic is the admission-multiplier dive, §9.4).
 
 **Delay lane + release worker** — one delay message per reservation fires at
 `payBy` (10 min): CAS `RESERVED → RELEASED`, then DB increment — the freed
 unit is claimed by the next waiting `PENDING` message hitting the
 conditional decrement. Only when nobody is waiting does the worker also
-`INCR` Redis and reopen public admission (§6.4). Ordering (CAS first,
+`INCR` Redis and reopen public admission (the waiters-first flip-back rule,
+§6.4). Ordering (CAS first,
 returns second) means a mid-release crash can strand a unit briefly but
-never return it twice (§6.3). A fire that lands after payment is a no-op by
-CAS (§9.6). A slow sweeper (1/min over `RESERVED` rows past `payBy`)
+never return it twice (the payment-vs-deadline race, §6.3). A fire that
+lands after payment is a no-op by CAS (the deadline-race dive, §9.6). A slow sweeper (1/min over `RESERVED` rows past `payBy`)
 backstops lost messages.
 
 **Payment worker** — consumes the provider's signed signal: `PAID` → CAS
 `RESERVED → CONFIRMED`; `FAILED` → early release via the same release path.
 Idempotent on providerRef (replays replay the stored outcome). The rare
 `PAID`-after-`RELEASED` ordering goes to an alarmed refund lane, walked on a
-concrete clock in §6.3.
+concrete clock in the payment-vs-deadline race, §6.3.
 
-**Audit job** — continuously proves FR-2: per sale,
+**Audit job** — continuously proves the zero-oversell invariant (requirement
+2): per sale,
 `SUM(CONFIRMED) ≤ initialStock`, plus the admission-vs-DB drift metric and a
-`RELEASED`-without-returned-stock reconciler (§6.3). The invariant is checked
-by a query, not assumed (§8).
+`RELEASED`-without-returned-stock reconciler (the release ordering in §6.3).
+The invariant is checked by a query, not assumed (paging metrics, §8).
 
 ## 5. Data model
 
-Relational DB (the truth store — §7 prices the KV alternative):
+Relational DB (the truth store — the alternatives section, §7, prices the
+key-value option):
 
 | Table | Keys | Columns / notes |
 |---|---|---|
-| `sales` | PK `saleId` | `skuId`, `initialStock`, `startsAt`, `endsAt`, `paymentWindowSec` (600), `multiplier` (M, default 4), `admissionPct` (rollout dial, §8). Read-mostly, cached in every gateway |
-| `stock` | PK `saleId` | `remaining INT NOT NULL CHECK (remaining >= 0)`. Exactly two mutations exist: the conditional decrement `WHERE remaining > 0` (§9.2) and the release increment. The CHECK constraint is a third, free, belt — a bug that bypasses the WHERE still cannot go negative. **The truth** |
+| `sales` | PK `saleId` | `skuId`, `initialStock`, `startsAt`, `endsAt`, `paymentWindowSec` (600), `multiplier` (M, default 4), `admissionPct` (rollout dial — rollout and rollback in §8). Read-mostly, cached in every gateway |
+| `stock` | PK `saleId` | `remaining INT NOT NULL CHECK (remaining >= 0)`. Exactly two mutations exist: the conditional decrement `WHERE remaining > 0` (the invariant-twice dive, §9.2) and the release increment. The CHECK constraint is a third, free, belt — a bug that bypasses the WHERE still cannot go negative. **The truth** |
 | `orders` | PK `orderId` · **UNIQUE (saleId, buyerId)** · index `(saleId, state)` | `buyerId`, `state`, `payBy`, `providerRef?`, `outcome` (stored response for idempotent replay), `createdAt`, `stateChangedAt`. The unique constraint is the durable one-per-customer backstop; the `(saleId, state)` index serves the audit, the sweeper, and the conversion metric — never the hot path |
 
-Redis (admission — rebuildable, never authoritative, §9.7):
+Redis (admission — rebuildable, never authoritative; the Redis-restart
+recovery dive, §9.7):
 
 | Key | Type | Contents |
 |---|---|---|
-| `{sale:<id>}:stock` | STRING (int) | admission slot counter, seeded `M × initialStock` at sale open; `DECR` by the admit script; `INCR` only by releases that find the waiting lane empty (§6.4) |
+| `{sale:<id>}:stock` | STRING (int) | admission slot counter, seeded `M × initialStock` at sale open; `DECR` by the admit script; `INCR` only by releases that find the waiting lane empty (the waiters-first flip-back rule, §6.4) |
 | `{sale:<id>}:claimed` | SET | buyerIds that consumed their one attempt; ~100K members ≈ a few MB. TTL = sale window + grace |
-| `{sale:<id>}:open` | STRING (0/1) | the sold-out flag gateways cache; flipped by the admit script at zero, cleared by flip-back (§6.4) |
+| `{sale:<id>}:open` | STRING (0/1) | the sold-out flag gateways cache; flipped by the admit script at zero, cleared by flip-back (sold-out flip rules, §6.4) |
 | `ratelimit:{buyerId}` | STRING + EXPIRE | exact per-buyer `INCR` counter, 1 s window — spread across shards by buyer key, deliberately NOT hash-tagged with the sale |
 
 The `{sale:<id>}` hash tag forces `stock`, `claimed`, and `open` onto **one
 cluster shard** — Lua atomicity requires every key it touches to be
-co-located (§9.11). The rate-limit keys stay un-tagged on purpose: they carry
+co-located (the shard trap in the gateway dive, §9.11). The rate-limit keys stay un-tagged on purpose: they carry
 the full 100K/s and must spread, while the tagged trio carries only
-post-shave traffic (§2.2 budget).
+post-shave traffic (the attempt-surface budget, §2.2).
 
 Queues:
 
@@ -283,7 +298,8 @@ Queues:
 Two counters, one truth: `{sale}:stock` (Redis) is *throughput*;
 `stock.remaining` (DB) is *truth*. They drift only through crashes and bugs;
 the drift metric and the audit exist to prove the drift stays bounded and the
-truth never overshoots (§9.2, §9.5).
+truth never overshoots (the invariant-twice dive, §9.2, and the
+Redis-yes-DB-no dive, §9.5).
 
 Access patterns that shaped this: one Lua `EVAL` per surviving attempt
 (single shard, single round-trip); point lookups by `orderId` and by the
@@ -320,7 +336,8 @@ sequenceDiagram
     end
 ```
 
-The script, in full (§9.11 walks the shard trap and the ordering decision):
+The script, in full (the gateway dive, §9.11, walks the shard trap and the
+ordering decision):
 
 ```lua
 -- KEYS[1] = {sale:<id>}:stock   KEYS[2] = {sale:<id>}:claimed
@@ -342,11 +359,11 @@ both `EVAL` with stock = 1. Redis runs X's script to completion first: X
 reads 1, claims, decrements to 0, returns ADMITTED. Y's script then reads 0,
 flips `open` to `'0'`, returns SOLD_OUT. No lock, no retry loop, no gap
 between the dedup answer and the admission answer — sequential execution *is*
-the mutual exclusion (§9.1).
+the mutual exclusion (the decrement-point dive, §9.1).
 
 Two ordering decisions inside the script, both deliberate:
 - **Stock check before `SADD`:** a sold-out answer must not burn the buyer's
-  one claim — if a release flips the sale back open (§6.4), they may try
+  one claim — if a release flips the sale back open (flip-back rules, §6.4), they may try
   again. Claim-first would permanently lock out everyone who clicked during
   a sold-out window.
 - **Flag flip inside the script:** the transition to sold-out happens exactly
@@ -355,11 +372,12 @@ Two ordering decisions inside the script, both deliberate:
 
 Failure edge, named now: the claim lands, then the enqueue or anything after
 it fails → that buyer is locked out holding nothing. Bounded (gateway crash
-window, not a steady state) but real. §9.11's refinement turns the claimed
+window, not a steady state) but real. The gateway dive's refinement (§9.11)
+turns the claimed
 SET into a small state ladder (HSET `claimed → enqueued`), so the same
 buyer's retry re-enters at the failed step idempotently instead of bouncing
 off `ALREADY` — the same replay-don't-reject shape the order table uses one
-layer down (§6.2).
+layer down (the order-creation contract, §6.2).
 
 ### 6.2 Order creation — where the truth gets written
 
@@ -371,7 +389,8 @@ at-least-once delivery notwithstanding*:
 2. Open one transaction:
    `UPDATE stock SET remaining = remaining - 1
    WHERE saleId = ? AND remaining > 0` — the conditional write *is* the
-   mutual exclusion (§9.2, §9.3). The row lock serializes concurrent
+   mutual exclusion (the invariant-twice dive, §9.2, and the no-lock dive,
+   §9.3). The row lock serializes concurrent
    consumers; the predicate makes the outcome deterministic at zero.
 3. Same transaction:
    `INSERT INTO orders (…, state = 'RESERVED', payBy = now + 600s)`. If the
@@ -383,12 +402,14 @@ at-least-once delivery notwithstanding*:
    a redelivery, never a lost order.
 5. Zero rows updated in step 2 = no stock *right now*. This is the designed
    condition, not an error: admission deliberately lets in `M × S` buyers so
-   that abandonment releases (arriving minutes later, §6.3) find warm buyers
+   that abandonment releases (arriving minutes later — the payment-vs-deadline
+   race, §6.3) find warm buyers
    already in line. Before the sale's **drain deadline** (sale close +
    payment window + grace): requeue the message with a short delay (~15 s)
    and leave the buyer `PENDING` — "in line". Past the deadline: write the
    order as `FAILED_LATE` (the stored apology) and ack. The waiting lane and
-   its arithmetic are §9.4; why the invariant survives it is §9.5.
+   its arithmetic are the admission-multiplier dive, §9.4; why the invariant
+   survives it is the Redis-yes-DB-no dive, §9.5.
 
 The crash matrix that makes at-least-once safe:
 
@@ -396,14 +417,14 @@ The crash matrix that makes at-least-once safe:
 |---|---|---|
 | before the txn | full retry | exactly one order |
 | inside the txn | txn rolled back, full retry | exactly one order |
-| after commit, before ack | step 3's unique constraint → replay stored outcome | exactly one order, one duplicate delay message (harmless: second CAS no-ops, §9.6) |
+| after commit, before ack | step 3's unique constraint → replay stored outcome | exactly one order, one duplicate delay message (harmless: second CAS no-ops — the deadline-race dive, §9.6) |
 | after ack | nothing redelivered | done |
 
 Never read-then-write on stock: a `SELECT remaining` followed by an
 unconditional `UPDATE` reintroduces exactly the race the conditional write
 exists to kill — two consumers both read 1, both write 0, two units sold on
 one remaining. The predicate form makes the storage engine the arbiter; the
-`CHECK (remaining >= 0)` constraint (§5) backstops even a future bug that
+`CHECK (remaining >= 0)` constraint (data model, §5) backstops even a future bug that
 edits the SQL.
 
 ### 6.3 Payment outcome vs. the deadline — a race, by design
@@ -424,17 +445,19 @@ sequenceDiagram
         DL->>RW: fire {orderId} at payBy
         RW->>DB: UPDATE orders SET state='RELEASED'<br/>WHERE orderId=? AND state='RESERVED'
         RW->>DB: on CAS success: remaining = remaining + 1
-        RW->>AD: only if waiting lane empty:<br/>INCR {sale}:stock + open='1' (§6.4)
+        RW->>AD: only if waiting lane empty:<br/>INCR {sale}:stock + open='1' (flip-back rules §6.4)
     end
 ```
 
 Both lanes guard on `state = 'RESERVED'`, so exactly one wins; the loser's
 update matches zero rows and no-ops. That single guard is the entire
 double-return defense: a late deadline after payment cannot release, and a
-duplicate release cannot increment twice (§9.6). The release itself is
+duplicate release cannot increment twice (the deadline-race dive, §9.6). The
+release itself is
 ordered deliberately — **CAS first, DB increment second, Redis last and only
 when nobody waits**: the freed unit normally goes to the next waiting
-`PENDING` message via the conditional decrement (§6.2), and public
+`PENDING` message via the conditional decrement (order-creation step 5,
+§6.2), and public
 admission reopens only once the admitted pool has drained. A crash
 mid-release strands at most one unit temporarily (the sweeper's re-fire
 no-ops on the CAS and a reconciler re-derives the returns from
@@ -460,9 +483,9 @@ The flip is owned by the admission script (§6.1): the request that observes
 zero flips `{sale}:open` to `'0'` atomically with its own rejection.
 Gateways poll-or-subscribe the flag and serve the cached sold-out from then
 on — the crowd stops touching Redis entirely, which is what lets one shard
-survive the stampede (§2.2).
+survive the stampede (the attempt-surface budget, §2.2).
 
-Flip-back is **waiters-first** (§6.3): a released unit is normally consumed
+Flip-back is **waiters-first** (the release ordering in §6.3): a released unit is normally consumed
 by the admitted buyers already circulating in the waiting lane — they hit
 the conditional decrement within one requeue delay (~15 s) and need no
 Redis change at all. Only when the waiting lane is empty (mass abandonment
@@ -470,9 +493,10 @@ beyond the M× margin — the funnel drained) does the release worker `INCR`
 `{sale}:stock` and set `{sale}:open = '1'`, re-admitting the public. Gateway
 caches lag by their refresh interval (~1 s), so buyers may see "sold out"
 while a returned unit exists — seconds of staleness in the safe direction,
-priced in §9.9. The unsafe direction cannot come from staleness at all: an
+priced in the sold-out-staleness dive, §9.9. The unsafe direction cannot come from staleness at all: an
 admitted attempt always re-checks the counter inside the script, and the DB
-conditional write backstops even a wrongly-open flag (§9.5). The flag is
+conditional write backstops even a wrongly-open flag (the Redis-yes-DB-no
+dive, §9.5). The flag is
 plain-SET rather than CAS-guarded on purpose: the worst a racing
 flip/flip-back can produce is a transiently wrong *advisory* flag, and both
 readers of consequence re-verify against the counter or the DB.
@@ -495,22 +519,23 @@ Both estimates err toward *under*-admission — the recoverable direction. The
 buyers whose claims lived only in the lost claimed-set (admitted but never
 ordered) are forgiven a second attempt; the order-table unique constraint
 absorbs any that already ordered. The full walk, including why forgiving
-those few is fine, is §9.7.
+those few is fine, is the Redis-restart recovery dive, §9.7.
 
 ## 7. Alternatives considered
 
 Compact scorecards; full reasoning lands in the deep dives.
 
-**The decrement point** (§9.1–§9.3)
+**The decrement point** (dives 9.1–9.3: decrement point, invariant twice,
+no lock)
 
 | Option | Throughput at the hot row | Crash behavior | Verdict |
 |---|---|---|---|
 | DB row lock only | ~10³ locked updates/s — funnel must admit ≈ stock exactly, killing the abandonment margin | correct but slow everywhere | rejected |
 | Redis only, no DB authority | memory-speed | failover/restore glitch can mint phantom stock → oversell owns a money-adjacent invariant | rejected |
 | Distributed lock around the decrement | same serialization, lower throughput | TTL expiry during a pause, fencing tokens — liveness failure modes a conditional write doesn't have | rejected |
-| **Redis admission + DB conditional write** | memory-speed where it matters, ~10²/s where truth lives | oversell requires both layers to fail in the same direction | **chosen** (§9.2) |
+| **Redis admission + DB conditional write** | memory-speed where it matters, ~10²/s where truth lives | oversell requires both layers to fail in the same direction | **chosen** (invariant-twice dive, §9.2) |
 
-**Deadline mechanism** (§9.6)
+**Deadline mechanism** (the deadline-race dive, §9.6)
 
 | Option | Release precision | Failure mode | Verdict |
 |---|---|---|---|
@@ -526,7 +551,7 @@ clear), retry + DLQ semantics for free, attempt path stays flat. Costs:
 eventual order visibility (`PENDING` for a second or two) and an idempotent
 consumer — both already required by other constraints. **Chosen: queue.**
 
-**One-per-customer placement** (§9.11). *DB unique constraint only:* correct,
+**One-per-customer placement** (the gateway dive, §9.11). *DB unique constraint only:* correct,
 but every duplicate costs a DB round-trip mid-storm — the constraint is the
 backstop, not the bouncer. *Gateway-memory only:* evaporates on restart and
 multiplies by node count. **Chosen: SADD claim inside the admission script**
@@ -538,11 +563,11 @@ conditional write (`WHERE remaining > 0` vs a condition expression). The
 unique constraint and the one-line aggregate audit are native to relational;
 on key-value they become an extra conditional item and a scan. Nothing here
 needs relational scale-out — the DB sees hundreds of writes/s, not the
-stampede (§2.2). **Chosen: relational**, with the honest note that a team
+stampede (the funnel arithmetic, §2.2). **Chosen: relational**, with the honest note that a team
 fluent in a conditional-write KV store loses little; lld.md pins the lab
 choice.
 
-**Fairness** (§9.10). *Global FIFO:* needs a single sequencer — a new
+**Fairness** (the fairness dive, §9.10). *Global FIFO:* needs a single sequencer — a new
 bottleneck and failure domain purchased to deliver a property the business
 did not ask for. *Lottery over a collection window:* the fairest option and a
 legitimate product choice; same architecture, different picker. **Chosen:
@@ -553,14 +578,14 @@ pivot.
 
 | Failure | Blast radius | Behavior |
 |---|---|---|
-| Redis crash mid-sale | admission blind | fail closed → "sold out" while blind; conservative rebuild from the DB (§9.7); transient under-sell possible, oversell impossible |
+| Redis crash mid-sale | admission blind | fail closed → "sold out" while blind; conservative rebuild from the DB (the Redis-restart recovery dive, §9.7); transient under-sell possible, oversell impossible |
 | Order queue backlog | order latency | nothing lost (durable queue); volume pre-bounded at M×S; alarm on oldest-message age |
-| Double-click / retry storm | none (by design) | token bucket sheds; claim + unique constraint collapse duplicates into replay (§9.11) |
-| Payment provider slow/down | conversions stall | reservations release at deadline, stock returns to the pool; conversion-rate alarm; late `PAID` → refund lane (§6.3) |
-| Over-admission bug (multiplier misconfig, rebuild error) | extra waiters; bounded `FAILED_LATE` tail at the drain deadline | the DB conditional write refuses everything past zero — the invariant holds at layer 2 (§9.5); admission-vs-DB drift alarm |
+| Double-click / retry storm | none (by design) | token bucket sheds; claim + unique constraint collapse duplicates into replay (the gateway dive, §9.11) |
+| Payment provider slow/down | conversions stall | reservations release at deadline, stock returns to the pool; conversion-rate alarm; late `PAID` → refund lane (the payment-vs-deadline race, §6.3) |
+| Over-admission bug (multiplier misconfig, rebuild error) | extra waiters; bounded `FAILED_LATE` tail at the drain deadline | the DB conditional write refuses everything past zero — the invariant holds at layer 2 (the Redis-yes-DB-no dive, §9.5); admission-vs-DB drift alarm |
 | Delay message lost | one stranded reservation | backstop sweeper releases it; alarm on max `RESERVED` age |
 | Order service crash mid-transaction | none (by design) | the transaction is atomic; the queue redelivers; the consumer replays idempotently on (saleId, buyerId) |
-| Sold-out cache stale during flip-back | seconds of "sold out" while a unit exists | accepted — staleness only ever points in the safe direction (§9.9) |
+| Sold-out cache stale during flip-back | seconds of "sold out" while a unit exists | accepted — staleness only ever points in the safe direction (the sold-out-staleness dive, §9.9) |
 
 **Metrics that page:** the audit query `SUM(CONFIRMED) ≤ initialStock`
 failing (severity-1 — the invariant broke) · admission-vs-DB drift beyond
@@ -571,7 +596,8 @@ age past the drain budget · max `RESERVED` age past `payBy` + sweep period
 
 **Dashboards, not pages:** conditional-write refusal rate (≈0 expected; a
 few during flip-back races are design-normal) · reservation→payment
-conversion (the business dial M feeds on this, §9.4) · attempt p99 and
+conversion (the business dial M feeds on this — the admission-multiplier
+dive, §9.4) · attempt p99 and
 sold-out p99 · claimed-set size vs admitted count · flip-back frequency.
 
 **Measure at the caller:** server-side latency metrics only count requests
@@ -579,7 +605,7 @@ that completed — a client-timeout storm is invisible in them. The gateway
 emits the attempt timer on success *and* failure, plus a distinct timeout
 counter; the buy path is judged from where the buyer stands.
 
-**Rollout and rollback:** `sales.admissionPct` (§5) is the dial — the
+**Rollout and rollback:** `sales.admissionPct` (data model, §5) is the dial — the
 admission script admits that fraction of otherwise-admissible attempts
 (deterministic on a buyerId hash, so one buyer sees a consistent answer).
 Start at 1%, raise in stages. Rollback = dial to 0: the queue drains,
@@ -600,17 +626,18 @@ acquisition, WAL append, replication all serialize on it. At 100K attempts/s
 that is a 100-second queue forming in the lock manager of the same database
 that must also write orders; timeouts cascade, connection pools drain, and
 the product page dies with it. To survive, the funnel would have to
-pre-reject down to ~stock exactly — killing the abandonment margin §9.4
-exists to provide.
+pre-reject down to ~stock exactly — killing the abandonment margin the
+admission-multiplier dive, §9.4, exists to provide.
 
 **Redis Lua as the decrement point:** a single-threaded event loop executes
 the admission script (§6.1) sequentially at ~10⁵/s, each in <1 ms. There is
 no lock because there is no concurrency — arrival order *is* the
-serialization. The gateway shave (§2.2) delivers ≤20K/s to the shard: 5×
+serialization. The gateway shave (the attempt-surface budget, §2.2) delivers ≤20K/s to the
+shard: 5×
 headroom.
 
 **Decision:** Redis Lua for admission throughput — but the DB stays in the
-design as *truth*, not throughput (§9.2). This is division of labor, not
+design as *truth*, not throughput (the invariant-twice dive, §9.2). This is division of labor, not
 distrust of databases: the DB sees only the post-funnel trickle (~hundreds
 of writes/s), which is exactly the load profile it is good at.
 
@@ -625,24 +652,26 @@ actually cover, and what single event could oversell?
 
 **One layer (Redis only):** memory-speed, but the invariant now lives in a
 store whose failover semantics are asynchronous. A crash-restore from a
-stale snapshot, a split-brain promotion, or a rebuild bug (§9.7) can mint
+stale snapshot, a split-brain promotion, or a rebuild bug (the Redis-restart recovery dive, §9.7) can mint
 phantom slots — and with no second check, every phantom slot becomes a sold
 unit. Oversell via infrastructure event: unacceptable for a money-adjacent
 promise.
 
-**One layer (DB only):** correct but slow (§9.1) — and every failure is now
+**One layer (DB only):** correct but slow (the decrement-point dive, §9.1) — and every failure is now
 a customer-visible outage instead of a degraded funnel.
 
 **Both layers:** Redis absorbs the concurrency; the DB conditional write
-(`WHERE remaining > 0`, §6.2) is the final arbiter that refuses anything a
+(`WHERE remaining > 0`, order-creation step 2 in §6.2) is the final arbiter that refuses anything a
 damaged admission layer over-admits. The layers fail independently — a Redis
-restore glitch produces extra *waiting buyers* (§9.5), not extra sold units;
+restore glitch produces extra *waiting buyers* (the Redis-yes-DB-no dive,
+§9.5), not extra sold units;
 a DB failure stops sales entirely (fail closed), never oversells. Oversell
 requires both layers to lie **in the same direction at the same time** — and
-the third belt, `CHECK (remaining >= 0)` (§5), demands a triple failure.
+the third belt, `CHECK (remaining >= 0)` (data model, §5), demands a triple
+failure.
 
 **Decision:** Redis Lua admission + DB conditional write, with the
-admission-vs-DB drift metric alarmed (§8) so divergence is observed, not
+admission-vs-DB drift metric alarmed (paging metrics, §8) so divergence is observed, not
 discovered by customers. The honest price: two counters to reconcile and a
 drift audit to operate — cheap against the alternative.
 
@@ -673,7 +702,8 @@ run.
 
 **Decision:** no lock anywhere in this design. Both enforcement points are
 condition-carrying writes: the Lua script (the condition is the first two
-lines, §6.1) and the SQL predicate (§6.2). Locks appear in the sibling
+lines, admission path §6.1) and the SQL predicate (order-creation step 2,
+§6.2). Locks appear in the sibling
 uber-like-rides design where a *time-boxed human decision* (a 10 s offer)
 must exclude concurrent offers — a genuinely different problem. Here the
 decision is instantaneous, so the write can carry its own condition.
@@ -697,7 +727,7 @@ in the business's currency.
 
 **Admit M× (default 4× = 4,000):** ~1,000 reserve immediately; ~3,000 wait
 in line as `PENDING`, their queue messages circulating on a ~15 s delay
-(§6.2 step 5). Every release is claimed within one delay period by a buyer
+(order-creation step 5, §6.2). Every release is claimed within one delay period by a buyer
 who already cleared auth, rate limits, and dedup — warm demand parked at
 the exact point of consumption. Expected coverage: 1,000 × 40% = 400
 releases against 3,000 waiters — the margin absorbs even a 3× worse
@@ -707,7 +737,7 @@ deadline (sale close + payment window + grace); those buyers were told
 
 **The dial:** M is a business knob, not architecture. Higher M = faster
 sell-through + more disappointed waiters; lower M = cleaner UX + slower
-conversion. M lives in `sales.multiplier` (§5) per sale; nothing but the
+conversion. M lives in `sales.multiplier` (data model, §5) per sale; nothing but the
 seed value changes.
 
 ```mermaid
@@ -735,21 +765,21 @@ injected releases).
 **The question behind the question:** over-admission is designed *and*
 accidental — where does each kind land, and who notices?
 
-**Designed over-admission** is §9.4: M× buyers against 1× stock. The DB
+**Designed over-admission** is the admission-multiplier dive, §9.4: M× buyers against 1× stock. The DB
 saying "no stock right now" to a waiter is the waiting lane working.
 
 **Accidental over-admission** — a rebuild error after a Redis restore
-(§9.7), a fat-fingered multiplier, a re-seeded counter: Redis hands out
+(the Redis-restart recovery dive, §9.7), a fat-fingered multiplier, a re-seeded counter: Redis hands out
 more slots than `M × S`. Nothing downstream trusts those slots. Every
 admitted buyer still funnels into the same conditional decrement; the DB
 refuses everything past `remaining = 0`; the excess waits in line and drains
 to `FAILED_LATE` at the deadline. The blast radius of an arbitrarily broken
 admission layer is *disappointment*, never oversell — the invariant's
-asymmetry (§1.1) made real.
+asymmetry (problem statement, §1.1) made real.
 
 **Detection is a metric, not a customer:** `admitted_count − (RESERVED +
 CONFIRMED + RELEASED + waiting)` per sale, alarmed when it exceeds `M × S`
-(§8). A drift alarm at 10:02 beats a support storm at 10:40.
+(paging metrics, §8). A drift alarm at 10:02 beats a support storm at 10:40.
 
 **Decision:** the DB conditional write refuses silently and cheaply; the
 drift alarm makes the refusal *observed*. No compensating logic on the hot
@@ -771,7 +801,8 @@ double-counts: a redelivered delay message increments twice; a release
 racing a payment confirms *and* releases the same unit — sold and returned
 simultaneously, the books lie.
 
-**CAS state machine:** both racers guard on the current state (§6.3):
+**CAS state machine:** both racers guard on the current state (the
+payment-vs-deadline race, §6.3):
 
 ```
 payment:  UPDATE orders SET state='CONFIRMED' WHERE orderId=? AND state='RESERVED'
@@ -785,7 +816,7 @@ again. Exactly-once effect from at-least-once timers, no coordination
 beyond the row itself.
 
 **The residual race** is time, not state: `PAID` arriving after the release
-CAS won (§6.3's concrete clock). State machines cannot un-ring the bell —
+CAS won (the concrete clock in the payment-vs-deadline race, §6.3). State machines cannot un-ring the bell —
 money moved outside our boundary. The refund lane (alarmed, provider-side
 idempotent refund) is the honest answer; extending the reservation would
 promise one unit twice.
@@ -804,22 +835,23 @@ CAS so *any number* of firings release at most once.
 memory; how do you resume without minting phantom slots?
 
 **While Redis is down:** the gateway treats EVAL errors and timeouts as
-"sold out" (§6.5) — fail closed. Nothing can oversell while we are blind,
+"sold out" (recovery, §6.5) — fail closed. Nothing can oversell while we are blind,
 because nothing gets admitted; buyers see the safe answer.
 
 **The wrong rebuild:** re-seed `{sale}:stock = M × initialStock`. Every
 already-admitted buyer's slot is forgotten, the crowd re-admits, and the
-waiting lane floods far past `M × S` — no oversell (§9.5 holds) but the
+waiting lane floods far past `M × S` — no oversell (the Redis-yes-DB-no dive, §9.5, holds) but the
 funnel's promise ("in line" means a real chance) degrades into a lottery
 with terrible odds.
 
-**The conservative rebuild** (§6.5, in order):
+**The conservative rebuild** (recovery, §6.5, in order):
 1. Keep `{sale}:open = '0'` while rebuilding — the flag doubles as a
    maintenance latch.
 2. `claimed` := every buyerId with an order row for this sale (indexed
    query on `(saleId, state)`). Buyers who were admitted but never reached
    an order row are *forgiven* — their re-attempt re-claims. Cost: a few
-   over-M admissions, absorbed by §9.5.
+   over-M admissions, absorbed by the DB layer (the Redis-yes-DB-no dive,
+   §9.5).
 3. `stock` := `M × DB.remaining − queue_depth`, floored at 0 — remaining
    real units times the multiplier, minus admissions already in flight.
    Every uncertainty rounds *down*: under-admission, the recoverable
@@ -828,21 +860,23 @@ with terrible odds.
 4. Reopen only if the rebuilt counter is positive.
 
 **Decision:** rebuild from the DB (the only surviving truth), err toward
-under-admission, and let §9.5's second layer absorb the forgiven edge. The
+under-admission, and let the second layer (the Redis-yes-DB-no dive, §9.5)
+absorb the forgiven edge. The
 serving state is *reconstructable from durable facts* — the property that
-makes non-durable admission acceptable at all (§2.2 durability asymmetry).
+makes non-durable admission acceptable at all (the durability asymmetry, §2.2).
 
 **In the code (planned):** `src/admission/rebuild.ts` (steps 1–4 as one
 runbook command), `src/harness/redis-kill.ts` (kills Redis mid-stampede,
-runs the rebuild, asserts the audit still holds — the checkpoint-5 drill).
+runs the rebuild, asserts the audit still holds — the proof-gate drill).
 
 ### 9.8 One SKU saturates its Redis shard — what is the relief?
 
-**The question behind the question:** the hash tag (§5) deliberately pins a
+**The question behind the question:** the hash tag (data model, §5)
+deliberately pins a
 sale to one shard — what happens when one sale outgrows one shard?
 
 **The arithmetic first:** a shard runs ~10⁵ EVAL/s; the gateway fleet
-ceiling (§2.2) delivers ≤2×10⁴/s. Saturation needs a ~5× hotter sale or a
+ceiling (the attempt-surface budget, §2.2) delivers ≤2×10⁴/s. Saturation needs a ~5× hotter sale or a
 gateway misconfiguration — this dive is the escalation path, not the
 default.
 
@@ -851,8 +885,8 @@ default.
 shard. Throughput multiplies by K. Costs: near sell-out, stock strands in
 cold sub-counters (buyer hashes to an empty one while another holds units)
 — so you need drain-and-rebalance logic exactly when the sale is hottest;
-the sold-out flip becomes a K-way condition; the rebuild (§9.7) multiplies
-by K.
+the sold-out flip becomes a K-way condition; the rebuild (the Redis-restart recovery dive, §9.7)
+multiplies by K.
 
 **Dedicated single-threaded writer (explicit serializer):** one process
 owns the SKU, consumes attempts from a queue, applies the same
@@ -879,7 +913,7 @@ shard); this dive documents the escalation with its trigger metric
 also the most cached — when is it wrong, in which direction, and who pays?
 
 **When it is honestly stale:** a release returns a unit while every gateway
-still caches `open = '0'`. Under waiters-first flip-back (§6.4) this is not
+still caches `open = '0'`. Under the waiters-first flip-back rule (§6.4) this is not
 even staleness — the unit is *reserved for the waiting lane*, and "sold
 out" is the correct public answer while any waiter remains. Only when the
 waiting lane is empty does the flag reopen, and then the gateways lag by
@@ -890,13 +924,14 @@ TTL.
 **The direction that would matter — saying "available" without stock:** a
 stale `open = '1'` admits a buyer against nothing. Two backstops make this
 harmless: the admission script re-checks the *counter* (not the flag)
-before admitting, and the DB conditional write refuses at zero (§9.5). The
+before admitting, and the DB conditional write refuses at zero (the Redis-yes-DB-no dive,
+§9.5). The
 buyer waits in line or fails late — never oversold.
 
 **Decision:** cache the sold-out answer aggressively (gateway memory +
 edge, ~1 s TTL) precisely *because* both failure directions are safe: one
 is a second of pessimism, the other is caught twice. The flag is advisory;
-the counter and the DB are the authorities (§6.4).
+the counter and the DB are the authorities (sold-out flip rules, §6.4).
 
 **In the code (planned):** `src/gateway/handler.ts` (flag cache + TTL),
 `src/admission/admit.lua` (counter re-check independent of flag).
@@ -908,7 +943,8 @@ business actually ask for it?
 
 **Strict global FIFO:** all 100K attempts sequence through one ordered log
 before admission. That sequencer is a new single point of failure and a
-new throughput ceiling (the hot-row problem reborn one layer up, §9.1), and
+new throughput ceiling (the hot-row problem reborn one layer up — the decrement-point dive, §9.1),
+and
 it still is not "fair" — position in the log is network luck (CDN pop,
 carrier latency), just laundered to look official.
 
@@ -923,7 +959,7 @@ and kinder to infrastructure (collection is an append, no race at all).
 Costs: a "results at :01" UX instead of instant feedback, and a collection
 store sized for all entrants.
 
-**Decision:** bounded unfairness, because the scope lock (§2.3) ratified it
+**Decision:** bounded unfairness, because the scope lock (out of scope, §2.3) ratified it
 and it needs zero new machinery. The architecture is deliberately
 pivot-ready: a lottery replaces the admission script's *picker* (SADD into
 an entries set during the window; a draw job seeds the winners into the
@@ -945,15 +981,15 @@ shields:
    traffic dies at cost zero — the flag is the funnel's off switch.
 2. **Local token bucket** (memory, per node): kills floods and bot bursts
    for free; approximate by design — N nodes × limit is still a fleet
-   ceiling (§2.2). Nobody needs exact rate limiting *before* auth.
+   ceiling (the attempt-surface budget, §2.2). Nobody needs exact rate limiting *before* auth.
 3. **Local JWT verify** (one signature op, CPU-only): an identity-service
    call here would be 100K lookups/s against a service sized for logins —
    the classic melt-your-dependency mistake. Only unknown/expired tokens
    pay a network hop.
 4. **Exact per-buyer rate limit** (`INCR` + `EXPIRE`, sub-ms): the first
-   network hop, spread across the cluster by buyer key (§5 — deliberately
+   network hop, spread across the cluster by buyer key (data model, §5 — deliberately
    NOT hash-tagged with the sale).
-5. **The admission EVAL** (§6.1): the only per-attempt operation that
+5. **The admission EVAL** (the admission path, §6.1): the only per-attempt operation that
    touches the sale's own shard.
 
 **The script's two structural choices:**
@@ -963,23 +999,24 @@ shields:
   both pass a check the other invalidated. The Lua boundary is the
   transaction.
 - **The shard trap:** cluster Lua refuses (or worse, misbehaves on) keys
-  from different slots. The `{sale:<id>}` hash tag (§5) pins `stock`,
+  from different slots. The `{sale:<id>}` hash tag (data model, §5) pins `stock`,
   `claimed`, and `open` to one slot — co-location is a *correctness*
   requirement, not an optimization. Miss it and the failure appears only
   in clustered production, never on a single-node dev box: the classic
   works-on-my-machine landmine, named here so the lab pins it with a
   cluster-mode test.
 - **Claim before slot, stock before claim** — the ordering argument in
-  §6.1: a sold-out answer must not consume the claim; a consumed claim must
+  the admission path, §6.1: a sold-out answer must not consume the claim; a consumed claim must
   guarantee the DECR runs (nothing between SADD and DECR can fail inside
   the atomic script).
 
-**The residual edge** (§6.1): claim landed, enqueue failed — the buyer holds
+**The residual edge** (named in the admission path, §6.1): claim landed, enqueue failed — the buyer holds
 a claim and nothing else. Refinement: the claimed SET becomes a small HSET
 ladder (`claimed → enqueued`); the gateway's retry path re-runs the enqueue
 if the ladder shows `claimed` without `enqueued`, making the same buyer's
 retry *complete the failed step* instead of bouncing off `ALREADY` — the
-replay-don't-reject shape the order table uses one layer down (§6.2).
+replay-don't-reject shape the order table uses one layer down (the
+order-creation contract, §6.2).
 
 ```mermaid
 flowchart LR
@@ -999,9 +1036,9 @@ requirement).
 
 ## 10. Final design — the whiteboard after the deep dives
 
-§4 is the sketch you draw in minute 15. The dives amended it; this is the
+The high-level design (§4) is the sketch you draw in minute 15. The dives amended it; this is the
 picture when the interview ends — same funnel, but components carry names,
-edges carry guarantees, and the waiting lane the dives forced (9.4) is
+edges carry guarantees, and the waiting lane the dives forced (the admission-multiplier dive, 9.4) is
 visible.
 
 ```mermaid
@@ -1038,27 +1075,32 @@ flowchart LR
     AU -.->|drift| AD
 ```
 
-What changed since §4, dive by dive:
+What changed since the §4 sketch, dive by dive:
 
-- **Added components:** the waiting lane (9.4) — zero-stock is a requeue
+- **Added components:** the waiting lane (admission-multiplier dive, 9.4) —
+  zero-stock is a requeue
   with delay, not a refusal, which is the only reading under which the
   admission multiplier makes sense; and the refund lane for
-  paid-after-released (9.6). Nothing else needed inventing — the dives
+  paid-after-released (deadline-race dive, 9.6). Nothing else needed inventing — the dives
   hardened edges rather than adding boxes.
 - **Data-model changes:** `orders` carries `FAILED_LATE` as the bounded
-  waiting-lane tail (9.4, 9.5); the claimed SET is upgraded to a
+  waiting-lane tail (dives 9.4 admission multiplier, 9.5 Redis-yes-DB-no); the claimed SET is upgraded to a
   claim-ladder HSET so gateway crashes replay instead of locking buyers out
-  (9.11); `CHECK (remaining >= 0)` named as the third belt (9.2).
+  (gateway dive, 9.11); `CHECK (remaining >= 0)` named as the third belt
+  (invariant-twice dive, 9.2).
 - **Edges that gained guarantees:** releases are waiters-first — public
-  re-admission only when the lane is empty (9.4, 9.9); the sold-out flag is
-  formally advisory, with the counter and the DB as authorities (9.9);
+  re-admission only when the lane is empty (admission-multiplier dive 9.4,
+  sold-out-staleness dive 9.9); the sold-out flag is formally advisory, with
+  the counter and the DB as authorities (sold-out-staleness dive, 9.9);
   every timer (delay message, sweeper, payment webhook) funnels through the
-  same CAS so duplicates no-op (9.6); admission failure is fail-closed with
-  a conservative, DB-derived rebuild (9.7).
-- **Deliberately unchanged:** two-layer enforcement (9.1–9.3 confirmed the
-  §4 shape — no lock appeared anywhere), bounded unfairness with the
-  lottery documented as a one-file pivot (9.10), single-shard admission
-  with split-counters as a measured escalation, not a default (9.8).
+  same CAS so duplicates no-op (deadline-race dive, 9.6); admission failure
+  is fail-closed with a conservative, DB-derived rebuild (Redis-restart
+  recovery dive, 9.7).
+- **Deliberately unchanged:** two-layer enforcement (dives 9.1–9.3 — decrement
+  point, invariant twice, no lock — confirmed the sketch; no lock appeared
+  anywhere), bounded unfairness with the lottery documented as a one-file
+  pivot (fairness dive, 9.10), single-shard admission with split-counters as
+  a measured escalation, not a default (shard-saturation dive, 9.8).
 
 ### One buy attempt, start to finish
 
@@ -1070,56 +1112,59 @@ unit; buyer R pays a heartbeat too late; the books stay right throughout:
    button is the only dynamic call. ~100K attempts arrive within the first
    second. Each gateway node's token bucket sheds the flood beyond its
    rate; signature checks kill replayed and expired tokens on CPU alone.
-   About 20K attempts survive to Redis (9.11).
+   About 20K attempts survive to Redis (the gateway dive, 9.11).
 2. **W's attempt reaches the admission script.** One EVAL: flag open →
    counter 4,000 → not yet claimed → claim + decrement. ADMITTED, message
    onto the SQS queue, 202 back. Total time ~30 ms. W's app starts polling
-   `orders/me`: `PENDING` (9.1, 9.11).
+   `orders/me`: `PENDING` (decrement-point dive 9.1, gateway dive 9.11).
 3. **The counter hits zero at ~10:00:01.** The 4,001st surviving attempt
    reads 0 and flips the flag inside the same script — atomic with its own
    rejection. Within a second every gateway caches sold-out; the remaining
-   ~96K answer from memory. Redis load collapses to near zero (9.9).
+   ~96K answer from memory. Redis load collapses to near zero (sold-out-staleness dive, 9.9).
 4. **L clicked at 10:00:02.** Flag check at the gateway: "sold out", ~1 ms,
    no Redis hop. L's claim was never consumed — if the sale ever reopens,
-   L may try again (9.9, the §6.1 ordering).
+   L may try again (sold-out-staleness dive 9.9; the stock-before-claim
+   ordering in the admission script, §6.1).
 5. **W double-clicks.** The second attempt hits the claimed set: `ALREADY`.
    The gateway replays W's stored outcome — no second slot, no error page.
    The same key would bounce off the orders UNIQUE constraint even if the
-   claim were lost — belt and braces (9.11, 9.2).
+   claim were lost — belt and braces (gateway dive 9.11, invariant-twice dive
+   9.2).
 6. **The queue drains.** Consumers pull ~4,000 messages over ~10 s. W's
    transaction runs `UPDATE stock SET remaining = remaining − 1 WHERE
    remaining > 0` — one row, engine-arbitrated — and inserts W's order:
    `RESERVED`, `payBy 10:10:04`. A delay message is scheduled; then the
    queue message is acked, in that order — a crash anywhere redelivers, and
-   the UNIQUE constraint turns the redelivery into a replay (9.2, 9.3, §6.2
-   crash matrix).
+   the UNIQUE constraint turns the redelivery into a replay (invariant-twice dive 9.2, no-lock dive
+   9.3, and the crash matrix in the order-creation contract, §6.2).
 7. **P is admitted buyer #2,741.** By P's turn, `remaining = 0`. Not a
    refusal: P's message requeues on a 15 s delay, P stays `PENDING` — "in
-   line". P's app shows exactly that (9.4).
+   line". P's app shows exactly that (admission-multiplier dive, 9.4).
 8. **10:07:12 — a reservation dies.** A buyer abandons payment… nothing
    happens yet. At their `payBy`, the delay message fires: CAS `RESERVED →
    RELEASED` wins, `remaining` increments to 1. The unit is *not*
    re-advertised — the waiting lane holds thousands; the flag stays down
-   (waiters-first, 9.9). Within one requeue cycle, P's message re-runs the
+   (waiters-first — sold-out-staleness dive, 9.9). Within one requeue cycle, P's message re-runs the
    conditional decrement: 1 → 0, P is `RESERVED` with a fresh `payBy`. The
    release-to-reserve hand-off took ≤15 s and touched no new admission
-   (9.4, 9.6).
+   (admission-multiplier dive 9.4, deadline-race dive 9.6).
 9. **R pays at the buzzer.** R completes payment at `payBy − 0.6 s`; the
    provider's webhook arrives 1.1 s later — after R's release CAS already
    won. The confirm CAS matches zero rows. R's order enters the refund
    lane: alarmed, human-visible, resolved by the provider's idempotent
    refund. R gets an apology and their money back; the unit went to the
    next waiter. The alternative — un-releasing — would promise one unit
-   twice (9.6).
-10. **10:11:30 — mid-sale Redis failover** (the drill from checkpoint 5,
-    §9.7). Gateways fail closed: attempts see "sold out" for the ~40 s
+   twice (deadline-race dive, 9.6).
+10. **10:11:30 — mid-sale Redis failover** (the Redis-restart recovery dive,
+    §9.7 — the proof-gate drill). Gateways fail closed: attempts see "sold out" for the ~40 s
     blip. On restore, the rebuild derives `claimed` from order rows and
     re-seeds the counter from `M × remaining − queue depth`, floored at
     zero, reopening only if positive. A handful of admitted-but-unordered
-    buyers are forgiven a retry; the DB layer absorbs them (9.5, 9.7).
+    buyers are forgiven a retry; the DB layer absorbs them (Redis-yes-DB-no dive 9.5, recovery dive 9.7).
 11. **Continuously, and at the drain deadline.** The audit query runs:
     `SUM(CONFIRMED) ≤ 1,000` — pass; admission-vs-DB drift within `M × S` —
     pass. At sale close + payment window + grace, the residual waiting lane
     drains to `FAILED_LATE` with the honest "didn't catch one" message. The
     books close: every confirmed unit traceable to exactly one buyer, no
-    unit sold twice, unsold returns retryable tomorrow (9.5, §8).
+    unit sold twice, unsold returns retryable tomorrow (Redis-yes-DB-no dive 9.5; paging
+    metrics, §8).
