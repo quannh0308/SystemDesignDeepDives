@@ -119,34 +119,20 @@ Named so the interview does not wander into them:
 
 ## 3. Core entities and APIs
 
-**Entities.** Five nouns carry the whole design. Two of them hold a copy of
-"how much stock is left" — and only one of those copies is allowed to be
-right. (Their exact fields, and one sale's worth of real values, are in the
-data model, §5 — "One sale, as data".)
+**Entities.** Five nouns carry the whole design. Two of them count the same
+thing — units left — and only one of those counts is allowed to be right.
+Where each lives and how it is stored is the data model, §5.
 
-- **`Sale`** — the configuration for one flash sale: which SKU, the initial
-  stock, when it opens and closes, the payment window (10 minutes), the
-  admission multiplier M, and the rollout dial. Written once by an operator,
-  read by everything else, cached in every gateway.
-- **`AdmissionState`** — the fast copy, in Redis, one per sale: a slot
-  counter (seeded at M × stock) and the set of buyers who have already used
-  their one attempt. It exists purely for speed. It can be lost at any moment
-  and rebuilt from the database, and nothing downstream ever trusts it as
-  the final word.
-- **`StockRow`** — the truth, in the database: a single row per sale holding
-  `remaining`. Only two operations may ever touch it — the conditional
-  decrement when an order is created, and the increment when a reservation
-  is released. There is no read-then-write anywhere. If Redis and this row
-  ever disagree, this row wins.
-- **`Order`** — one buyer's reservation and its life story: `RESERVED`,
-  then `CONFIRMED` or `RELEASED`. Exactly one per (sale, buyer) — a unique
-  constraint, so a second attempt by the same buyer replays the first one
-  instead of creating a duplicate. Carries the payment deadline and the
-  stored outcome that idempotent replays return.
-- **`ReleaseTimer`** — one delayed message per reservation, scheduled to
-  fire at the payment deadline. When it fires, the reservation is released
-  and the unit goes back into the pool — unless payment already landed, in
-  which case the timer finds nothing to release and does nothing.
+- **`Sale`** — one flash sale's configuration: the SKU, the initial stock,
+  the sale window, the payment deadline, the admission multiplier.
+- **`AdmissionState`** — the fast, disposable count of slots handed out so
+  far, plus the buyers who have already used their one attempt.
+- **`StockRow`** — the authoritative count of units left. When the two
+  counts disagree, this one is right.
+- **`Order`** — one buyer's reservation and its lifecycle (the state machine
+  below). At most one per buyer per sale.
+- **`ReleaseTimer`** — the deadline that turns an unpaid reservation back
+  into stock.
 
 **Order states:** every transition is a conditional update on the current state
 (CAS), so each applies at most once and late messages no-op (the deadline-race
