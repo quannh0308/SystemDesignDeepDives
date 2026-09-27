@@ -174,34 +174,63 @@ tail that never caught a released unit by the sale's drain deadline — the
 deliberate price of the admission multiplier (its dive, §9.4; why the invariant
 survives it, the Redis-yes-DB-no dive, §9.5).
 
-**API** (buyer-authenticated with a signed session token, verified locally at
-the gateway — no identity-service call on the hot path — the gateway dive,
-§9.11):
+**API.** Three endpoints. Two face the buyer; one faces the payment provider.
+Every buyer call carries a signed session token that the gateway verifies
+locally — no identity-service call on the hot path (the gateway dive, §9.11).
+
+*The buy attempt — the only call the stampede makes:*
 
 ```
-POST /v1/sales/{saleId}/attempts                            (buyer)
-  → 202 {status:"ADMITTED"}               admitted into the buy path
-  → 200 {status:"SOLD_OUT"}               O(1), cache/edge-served
-  → 200 {status:"ALREADY_ATTEMPTED"}      one claim per buyer (gateway dive §9.11)
-  → 429                                   rate-limited (edge/local)
+POST /v1/sales/{saleId}/attempts                                   (buyer)
 
-GET  /v1/sales/{saleId}/orders/me                           (buyer, polling)
-  → {orderId?, state: PENDING|RESERVED|CONFIRMED|RELEASED|FAILED_LATE, payBy?}
-
-POST /internal/payment-events           (payment provider, signed webhook)
-  {orderId, outcome: PAID|FAILED, providerRef}    idempotent (deadline-race dive §9.6)
+  → 202 {status: "ADMITTED"}            you are in the buy path; poll for your order
+  → 200 {status: "SOLD_OUT"}            answered from cache, no Redis hop
+  → 200 {status: "ALREADY_ATTEMPTED"}   one claim per buyer; your first outcome is replayed
+  → 429                                 rate-limited at the edge or the gateway node
 ```
 
-Identity always comes from the auth token, never the body — a buyer id in the
-payload would let one client claim (and burn) another buyer's single attempt.
-The attempt response never leaks remaining-stock numbers (a countdown invites
-scripted sniping); it answers only the buyer's own outcome. The payment webhook
-is signature-verified and idempotent on `providerRef`; replays of the same
-signal replay the stored outcome.
+Four answers, all fast, and only one of them costs anything. The 202 is a
+promise of a *place in line*, not a unit: the order row does not exist yet.
+The response never says how many units are left — a countdown invites
+scripted sniping — only the buyer's own outcome. Identity comes from the
+token, never the body: a `buyerId` in the payload would let one client burn
+another buyer's single attempt.
 
-There is no client-supplied idempotency key: the natural key **(saleId,
-buyerId)** *is* the idempotency key end to end — the Redis claim, the
-order-table unique constraint, and response replay all hang off it.
+*Where am I? — the buyer's polling call:*
+
+```
+GET  /v1/sales/{saleId}/orders/me                                  (buyer)
+
+  → {orderId?, state: PENDING | RESERVED | CONFIRMED | RELEASED | FAILED_LATE,
+     payBy?}
+```
+
+The state machine from above, seen from one buyer's side. `PENDING` means
+"admitted, no order row yet" — either the message is still in the queue or
+stock is exhausted right now and the buyer is waiting for a released unit
+(order-creation step 5, §6.2). `RESERVED` carries `payBy`: the clock the
+buyer is racing. `orderId` is absent until the row exists.
+
+*Money moved — the provider tells us:*
+
+```
+POST /internal/payment-events                       (payment provider, signed)
+
+  {orderId, outcome: PAID | FAILED, providerRef}
+  → 200 always (idempotent on providerRef)
+```
+
+The only inbound call that is not from a buyer. Signature-verified, and
+idempotent on `providerRef`: the provider may deliver the same event twice,
+and the second delivery replays the stored outcome. `PAID` flips
+`RESERVED → CONFIRMED`; `FAILED` releases early. Both are conditional
+updates on the current state, so a signal that arrives after the deadline
+already released the unit changes nothing — that case goes to the refund
+lane (the payment-vs-deadline race, §6.3).
+
+There is no client-supplied idempotency key anywhere: the natural key
+**(saleId, buyerId)** *is* the idempotency key end to end — the Redis claim,
+the order-table unique constraint, and response replay all hang off it.
 
 ## 4. High-level design
 
