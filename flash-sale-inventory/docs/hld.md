@@ -103,24 +103,49 @@ DB; money truth never enters it.
 
 ### 2.3 Out of scope
 
-Payment processing internals (we consume `PAID`/`FAILED` signals; the
-`payment-system` design in this repo owns that territory) · multi-SKU shard
-placement (all keys are per-sale, so N concurrent sales are N independent
-funnels; the hot-SKU escalation is the shard-saturation dive, §9.8) · bot and
-fraud scoring beyond rate limiting · lottery-style fairness (the fairness dive,
-§9.10, names the pivot; same architecture, different picker) · restock events
-and multi-round sales · catalog, carts, checkout UX (a flash sale is buy-now,
-quantity 1) · queue-position waiting pages.
+Named so the interview does not wander into them:
+
+- **Payment processing itself.** We consume `PAID`/`FAILED` signals from a
+  provider; the `payment-system` design in this repo owns that territory.
+- **Multi-SKU shard placement.** Every key here is per-sale, so N concurrent
+  sales are N independent funnels. The one-sale-too-hot case is covered by
+  the shard-saturation dive, §9.8.
+- **Bot and fraud scoring** beyond rate limiting.
+- **Lottery-style fairness.** The fairness dive, §9.10, names it as the
+  pivot: same architecture, different picker.
+- **Restock events and multi-round sales.**
+- **Catalog, carts, checkout UX.** A flash sale is buy-now, quantity 1.
+- **Queue-position waiting pages** ("you are #2,741 in line").
 
 ## 3. Core entities and APIs
 
-**Entities.** `Sale` (config: skuId, initialStock, startsAt, paymentWindow,
-admission multiplier M) · `AdmissionState` (Redis, per sale: a stock counter and
-a claimed-set — rebuildable, never authoritative) · `Order` (the reservation
-state machine; unique per (saleId, buyerId); carries the payment deadline and a
-stored outcome for idempotent replay) · `StockRow` (DB: `remaining` — **the
-truth**, only ever mutated by conditional writes) · `ReleaseTimer` (one delay
-message per reservation, fires at the deadline).
+**Entities.** Five nouns carry the whole design. Two of them hold a copy of
+"how much stock is left" — and only one of those copies is allowed to be
+right:
+
+- **`Sale`** — the configuration for one flash sale: which SKU, the initial
+  stock, when it opens and closes, the payment window (10 minutes), the
+  admission multiplier M, and the rollout dial. Written once by an operator,
+  read by everything else, cached in every gateway.
+- **`AdmissionState`** — the fast copy, in Redis, one per sale: a slot
+  counter (seeded at M × stock) and the set of buyers who have already used
+  their one attempt. It exists purely for speed. It can be lost at any moment
+  and rebuilt from the database, and nothing downstream ever trusts it as
+  the final word.
+- **`StockRow`** — the truth, in the database: a single row per sale holding
+  `remaining`. Only two operations may ever touch it — the conditional
+  decrement when an order is created, and the increment when a reservation
+  is released. There is no read-then-write anywhere. If Redis and this row
+  ever disagree, this row wins.
+- **`Order`** — one buyer's reservation and its life story: `RESERVED`,
+  then `CONFIRMED` or `RELEASED`. Exactly one per (sale, buyer) — a unique
+  constraint, so a second attempt by the same buyer replays the first one
+  instead of creating a duplicate. Carries the payment deadline and the
+  stored outcome that idempotent replays return.
+- **`ReleaseTimer`** — one delayed message per reservation, scheduled to
+  fire at the payment deadline. When it fires, the reservation is released
+  and the unit goes back into the pool — unless payment already landed, in
+  which case the timer finds nothing to release and does nothing.
 
 **Order states:** every transition is a conditional update on the current state
 (CAS), so each applies at most once and late messages no-op (the deadline-race
@@ -577,17 +602,28 @@ pivot.
 | Order service crash mid-transaction | none (by design) | the transaction is atomic; the queue redelivers; the consumer replays idempotently on (saleId, buyerId) |
 | Sold-out cache stale during flip-back | seconds of "sold out" while a unit exists | accepted — staleness only ever points in the safe direction (the sold-out-staleness dive, §9.9) |
 
-**Metrics that page:** the audit query `SUM(CONFIRMED) ≤ initialStock` failing
-(severity-1 — the invariant broke) · admission-vs-DB drift beyond `M × S`
-(over-admission beyond design) · refund-lane entries (each one is a customer who
-paid and lost the unit) · DLQ depth > 0 · oldest queue message age past the
-drain budget · max `RESERVED` age past `payBy` + sweep period (both timers
-failed).
+**Metrics that page** — each one means a human has to act now:
 
-**Dashboards, not pages:** conditional-write refusal rate (≈0 expected; a few
-during flip-back races are design-normal) · reservation→payment conversion (the
-business dial M feeds on this — the admission-multiplier dive, §9.4) · attempt
-p99 and sold-out p99 · claimed-set size vs admitted count · flip-back frequency.
+- The audit query `SUM(CONFIRMED) ≤ initialStock` failing. Severity 1: the
+  invariant broke.
+- Admission-vs-DB drift beyond `M × S`. Over-admission beyond what the
+  multiplier designed for.
+- Any refund-lane entry. Each one is a customer who paid and lost the unit.
+- DLQ depth above zero. A poison message is stuck.
+- Oldest queue message older than the drain budget. Orders are not being
+  written.
+- Max `RESERVED` age past `payBy` plus one sweep period. Both release timers
+  failed for the same reservation.
+
+**Dashboards, not pages** — watched, not woken for:
+
+- Conditional-write refusal rate. Expected ≈0; a few during flip-back races
+  are design-normal.
+- Reservation→payment conversion. The business dial M is tuned on this
+  (the admission-multiplier dive, §9.4).
+- Attempt p99 and sold-out p99.
+- Claimed-set size vs admitted count.
+- Flip-back frequency.
 
 **Measure at the caller:** server-side latency metrics only count requests that
 completed — a client-timeout storm is invisible in them. The gateway emits the
