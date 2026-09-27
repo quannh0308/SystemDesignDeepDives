@@ -121,7 +121,8 @@ Named so the interview does not wander into them:
 
 **Entities.** Five nouns carry the whole design. Two of them hold a copy of
 "how much stock is left" — and only one of those copies is allowed to be
-right:
+right. (Their exact fields, and one sale's worth of real values, are in the
+data model, §5 — "One sale, as data".)
 
 - **`Sale`** — the configuration for one flash sale: which SKU, the initial
   stock, when it opens and closes, the payment window (10 minutes), the
@@ -345,6 +346,82 @@ Queues:
 |---|---|---|
 | Order queue + DLQ | `{saleId, buyerId}` | at-least-once; consumer idempotent on the natural key; DLQ isolates poison items, alarmed |
 | Delay lane | `{orderId}`, delivered at `payBy` | one message per reservation; a slow sweeper over `(saleId, state=RESERVED, payBy < now)` backstops lost messages |
+
+**One sale, as data.** The same sale the walkthrough in §10 narrates, frozen
+at 10:07:20 — seven minutes in, stock long exhausted, first abandonments
+starting to release. Every number below is consistent with that story.
+
+The configuration row, written once before the doors open:
+
+```
+sales
+  saleId            'sale_bf27'
+  skuId             'SKU-4410-BLK'
+  initialStock      1000
+  startsAt          2026-11-27T10:00:00Z
+  endsAt            2026-11-27T10:15:00Z
+  paymentWindowSec  600                  -- 10 minutes to pay
+  multiplier        4                    -- admit 4 × 1,000 = 4,000
+  admissionPct      100                  -- fully dialed up
+```
+
+The truth — one row, one integer, only ever moved by conditional writes:
+
+```
+stock
+  saleId     'sale_bf27'
+  remaining  1        -- one abandoned unit just came back (10:07:12);
+                      -- the next waiting message will take it within ~15 s
+```
+
+Three orders, one in each state a reader should recognize. Buyer W (reserved,
+racing the clock), a buyer who paid, and buyer R from the narration — released
+at the deadline, payment arrived a second too late, now in the refund lane:
+
+```
+orders
+  orderId      'ord_01J9X…W'   'ord_01J9X…K'    'ord_01J9X…R'
+  saleId       'sale_bf27'     'sale_bf27'      'sale_bf27'
+  buyerId      'buyer_7a21'    'buyer_3c90'     'buyer_e5d4'
+  state        RESERVED        CONFIRMED        RELEASED
+  payBy        10:10:04Z       10:10:02Z        10:07:12Z
+  providerRef  null            'pay_9f31c0'     'pay_2b77aa'  -- arrived late
+  outcome      {status:ADMITTED, orderId:…}      …             …
+  createdAt    10:00:04Z       10:00:02Z        09:57:12Z
+  stateChanged 10:00:04Z       10:03:41Z        10:07:12Z
+```
+
+`UNIQUE (saleId, buyerId)` is why `buyer_7a21` can click Buy ten more times
+and always get `ord_01J9X…W` back. Buyer P from the narration has **no row
+yet** — admitted, waiting in line, that is exactly what `PENDING` means.
+
+The fast copy, in Redis — three hash-tagged keys on one shard:
+
+```
+{sale:bf27}:stock     "0"          -- 4,000 slots handed out; not re-incremented
+                                   -- while the waiting lane is non-empty (§6.4)
+{sale:bf27}:open      "0"          -- sold-out flag; gateways cache this
+{sale:bf27}:claimed   SET, 4,000 members   {"buyer_7a21", "buyer_3c90", …}
+                                   -- TTL: sale end + grace → 10:30:00Z
+
+ratelimit:buyer_7a21  "3"  EX 1   -- un-tagged: lives on whichever shard
+                                   -- buyer_7a21 hashes to
+```
+
+Two messages in flight — one waiting buyer circling for the released unit,
+and one deadline timer armed for W:
+
+```
+order queue      {saleId:"sale_bf27", buyerId:"buyer_9e02"}
+                 receive count 27, next visible 10:07:31Z   -- P, "in line"
+
+delay lane       {orderId:"ord_01J9X…W"}
+                 deliver at 10:10:04Z                        -- W's payBy
+```
+
+Read the four stores together and the invariant is visible by inspection:
+`initialStock 1000` − `remaining 1` = 999 units accounted for as
+`RESERVED + CONFIRMED` rows — never more than 1,000, whatever Redis says.
 
 Two counters, one truth: `{sale}:stock` (Redis) is *throughput*;
 `stock.remaining` (DB) is *truth*. They drift only through crashes and bugs; the
